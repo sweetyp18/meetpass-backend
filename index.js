@@ -6,6 +6,7 @@ const cors = require("cors");
 const app = express();
 const PORT = process.env.PORT || 5000;
 
+
 // Middlewares
 app.use(cors());
 app.use(bodyParser.json());
@@ -120,6 +121,9 @@ app.patch("/api/meetings/:id", (req, res) => {
       res.json({ updated: this.changes });
     }
   );
+});
+app.get("/", (req, res) => {
+  res.send("MeetPass Backend is running 🚀");
 });
 
 app.get("/api/setup", (req, res) => {
