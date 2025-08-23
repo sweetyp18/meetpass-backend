@@ -1,0 +1,7 @@
+node_modules/ 
+meetpass.db 
+AppData/ 
+*.tmp 
+*.log 
+Thumbs.db 
+Desktop.ini 
