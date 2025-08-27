@@ -2,10 +2,10 @@ const express = require("express");
 const sqlite3 = require("sqlite3").verbose();
 const bodyParser = require("body-parser");
 const cors = require("cors");
+const bcrypt = require("bcrypt");
 
 const app = express();
 const PORT = process.env.PORT || 5000;
-
 
 // Middlewares
 app.use(cors());
@@ -13,137 +13,95 @@ app.use(bodyParser.json());
 
 // Database setup
 const db = new sqlite3.Database("./meetpass.db", (err) => {
-  if (err) console.error("DB connection error:", err.message);
-  else console.log("Connected to SQLite DB");
+  if (err) console.error("DB Error: ", err.message);
+  else console.log("Connected to meetpass.db");
 });
 
 // Create tables if not exist
 db.serialize(() => {
-  db.run(
-    `CREATE TABLE IF NOT EXISTS users (
-      userId TEXT PRIMARY KEY,
-      password TEXT,
-      role TEXT
-    )`
-  );
-
-  db.run(
-    `CREATE TABLE IF NOT EXISTS meetings (
+  db.run(`
+    CREATE TABLE IF NOT EXISTS users (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      token TEXT,
-      sender TEXT,
-      meetingWith TEXT,
+      name TEXT,
+      email TEXT UNIQUE,
+      password TEXT
+    )
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS meetings (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      title TEXT,
       purpose TEXT,
-      venue TEXT,
-      dateTime TEXT,
-      isGroup INTEGER,
-      participants TEXT,
-      status TEXT,
-      approvedBy TEXT
-    )`
-  );
+      date TEXT,
+      time TEXT,
+      createdBy INTEGER,
+      FOREIGN KEY (createdBy) REFERENCES users(id)
+    )
+  `);
 });
 
-// ------------------- Routes -------------------
+// Signup API
+app.post("/signup", async (req, res) => {
+  const { name, email, password } = req.body;
+  if (!name || !email || !password)
+    return res.status(400).json({ message: "All fields are required" });
 
-// Login
-app.post("/api/login", (req, res) => {
-  const { userId, password } = req.body;
-  if (!userId || !password)
-    return res.status(400).json({ error: "Missing credentials" });
-
-  db.get(
-    "SELECT * FROM users WHERE userId = ? AND password = ?",
-    [userId, password],
-    (err, row) => {
-      if (err) return res.status(500).json({ error: err.message });
-      if (!row) return res.status(401).json({ error: "Invalid Credentials" });
-      res.json({ userId: row.userId, role: row.role });
-    }
-  );
+  try {
+    const hashedPassword = await bcrypt.hash(password, 10);
+    db.run(
+      `INSERT INTO users (name, email, password) VALUES (?, ?, ?)`,
+      [name, email, hashedPassword],
+      function (err) {
+        if (err) return res.status(400).json({ message: "User already exists" });
+        res.json({ message: "Signup successful", userId: this.lastID });
+      }
+    );
+  } catch (err) {
+    res.status(500).json({ message: "Signup failed" });
+  }
 });
 
-// Create meeting
-app.post("/api/meetings", (req, res) => {
-  const {
-    token,
-    sender,
-    meetingWith,
-    purpose,
-    venue,
-    dateTime,
-    isGroup,
-    participants,
-    status,
-  } = req.body;
+// Login API
+app.post("/login", (req, res) => {
+  const { email, password } = req.body;
+  db.get(`SELECT * FROM users WHERE email = ?`, [email], async (err, user) => {
+    if (err || !user) return res.status(400).json({ message: "Invalid email" });
 
-  db.run(
-    `INSERT INTO meetings
-    (token, sender, meetingWith, purpose, venue, dateTime, isGroup, participants, status)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [
-      token,
-      sender,
-      meetingWith,
-      purpose,
-      venue,
-      dateTime,
-      isGroup ? 1 : 0,
-      JSON.stringify(participants || []),
-      status,
-    ],
-    function (err) {
-      if (err) return res.status(500).json({ error: err.message });
-      res.json({ id: this.lastID });
-    }
-  );
-});
+    const isMatch = await bcrypt.compare(password, user.password);
+    if (!isMatch) return res.status(400).json({ message: "Incorrect password" });
 
-// Get all meetings
-app.get("/api/meetings", (req, res) => {
-  db.all("SELECT * FROM meetings", [], (err, rows) => {
-    if (err) return res.status(500).json({ error: err.message });
-    // Parse participants JSON
-    const meetings = rows.map((m) => ({ ...m, participants: JSON.parse(m.participants) }));
-    res.json(meetings);
+    res.json({ message: "Login successful", userId: user.id });
   });
 });
 
-// Approve / Reject meeting
-app.patch("/api/meetings/:id", (req, res) => {
-  const { status, approvedBy } = req.body;
-  const { id } = req.params;
+// Schedule Meeting API
+app.post("/meetings", (req, res) => {
+  const { title, purpose, date, time, createdBy } = req.body;
+  if (!purpose || !date || !time)
+    return res.status(400).json({ message: "All fields required" });
+
   db.run(
-    "UPDATE meetings SET status = ?, approvedBy = ? WHERE id = ?",
-    [status, approvedBy, id],
+    `INSERT INTO meetings (title, purpose, date, time, createdBy) VALUES (?, ?, ?, ?, ?)`,
+    [title || "", purpose, date, time, createdBy],
     function (err) {
-      if (err) return res.status(500).json({ error: err.message });
-      res.json({ updated: this.changes });
-    }
-  );
-});
-app.get("/", (req, res) => {
-  res.send("MeetPass Backend is running 🚀");
-});
-
-app.get("/api/setup", (req, res) => {
-  db.run(
-    `INSERT OR IGNORE INTO users (userId, password, role) VALUES
-    ('staff1', '123456', 'staff'),
-    ('staff2', '100000', 'staff'),
-    ('SJU-03', '110000', 'student'),
-    ('SJU-04', '111111', 'student'),
-    ('staff4', '111111', 'staff')`,
-    (err) => {
-      if (err) return res.status(500).json({ error: err.message });
-      res.json({ message: "Test users added" });
+      if (err) return res.status(500).json({ message: "Error scheduling meeting" });
+      res.json({ message: "Meeting scheduled", meetingId: this.lastID });
     }
   );
 });
 
-
-
-// ------------------- Start Server -------------------
-app.listen(PORT, () => {
-  console.log(`Server listening on port ${PORT}`);
+// Get Meetings API
+app.get("/meetings/:userId", (req, res) => {
+  const { userId } = req.params;
+  db.all(
+    `SELECT * FROM meetings WHERE createdBy = ?`,
+    [userId],
+    (err, rows) => {
+      if (err) return res.status(500).json({ message: "Error fetching meetings" });
+      res.json(rows);
+    }
+  );
 });
+
+app.listen(PORT, () => console.log(`Server running on https://meetpass-backend.onrender.com:${PORT}`));
