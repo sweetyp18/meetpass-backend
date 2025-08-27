@@ -1,1 +1,0 @@
-CREATE TABLE IF NOT EXISTS users (  id INTEGER PRIMARY KEY AUTOINCREMENT,  name TEXT,  email TEXT UNIQUE,  password TEXT);CREATE TABLE IF NOT EXISTS meetings (  id INTEGER PRIMARY KEY AUTOINCREMENT,  title TEXT,  purpose TEXT,  date TEXT,  time TEXT,  createdBy INTEGER,  FOREIGN KEY (createdBy) REFERENCES users(id));
