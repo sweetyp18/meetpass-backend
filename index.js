@@ -127,5 +127,8 @@ app.patch("/meetings/:id", (req, res) => {
     }
   );
 });
+app.get("/", (req, res) => {
+  res.send("MeetPass Backend is running!");
+});
 
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
