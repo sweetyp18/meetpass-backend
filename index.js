@@ -19,19 +19,32 @@ const db = new sqlite3.Database("./meetpass.db", (err) => {
 
 // Create tables if not exist
 db.serialize(() => {
+ db.run(`
+  CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT,
+    email TEXT UNIQUE,
+    password TEXT,
+    role TEXT DEFAULT 'student'
+  )
+`);
+
+
+  db.serialize(() => {
   db.run(`
     CREATE TABLE IF NOT EXISTS users (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT,
       email TEXT UNIQUE,
-      password TEXT
+      password TEXT,
+      role TEXT DEFAULT 'student'
     )
   `);
 
   db.run(`
     CREATE TABLE IF NOT EXISTS meetings (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      createdBy INTEGER,
+      scheduler TEXT,
       participantType TEXT,
       participantEmail TEXT,
       purpose TEXT,
@@ -42,38 +55,16 @@ db.serialize(() => {
       participants TEXT,
       token TEXT UNIQUE,
       status TEXT DEFAULT 'Pending',
-      approvedBy TEXT,
-      FOREIGN KEY (createdBy) REFERENCES users(id)
+      approvedBy TEXT
     )
   `);
 });
+
 
 // Root route for health check
 app.get("/", (req, res) => {
   res.send("MeetPass Backend is running!");
 });
-
-// Signup API
-app.post("/signup", async (req, res) => {
-  const { name, email, password } = req.body;
-  if (!name || !email || !password)
-    return res.status(400).json({ message: "All fields are required" });
-
-  try {
-    const hashedPassword = await bcrypt.hash(password, 10);
-    db.run(
-      `INSERT INTO users (name, email, password) VALUES (?, ?, ?)`,
-      [name, email, hashedPassword],
-      function (err) {
-        if (err) return res.status(400).json({ message: "User already exists" });
-        res.json({ message: "Signup successful", userId: this.lastID });
-      }
-    );
-  } catch (err) {
-    res.status(500).json({ message: "Signup failed" });
-  }
-});
-
 // Login API
 app.post("/login", (req, res) => {
   const { email, password } = req.body;
@@ -83,83 +74,66 @@ app.post("/login", (req, res) => {
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) return res.status(400).json({ message: "Incorrect password" });
 
-    res.json({ message: "Login successful", userId: user.id });
+    // Return name, email, and role
+    res.json({
+      message: "Login successful",
+      name: user.name,
+      email: user.email,
+      role: user.role || "student"
+    });
   });
 });
 
-// Schedule Meeting API
+//schedule meeting
 app.post("/meetings", (req, res) => {
   const {
-    createdBy,
-    participantType,
-    participantEmail,
-    purpose,
-    venue,
-    startTime,
-    endTime,
-    isGroup,
-    participants,
-    token,
-    status,
+    scheduler, participantType, participantEmail,
+    purpose, venue, startTime, endTime, isGroup,
+    participants, token, status
   } = req.body;
 
-  if (!createdBy || !purpose || !startTime || !endTime)
-    return res.status(400).json({ message: "All fields required" });
+  const participantsJSON = JSON.stringify(participants || []);
 
   db.run(
     `INSERT INTO meetings 
-    (createdBy, participantType, participantEmail, purpose, venue, startTime, endTime, isGroup, participants, token, status) 
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [
-      createdBy,
-      participantType,
-      participantEmail,
-      purpose,
-      venue,
-      startTime,
-      endTime,
-      isGroup ? 1 : 0,
-      participants ? JSON.stringify(participants) : "",
-      token,
-      status || "Pending",
-    ],
+      (scheduler, participantType, participantEmail, purpose, venue, startTime, endTime, isGroup, participants, token, status) 
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [scheduler, participantType, participantEmail, purpose, venue, startTime, endTime, isGroup ? 1 : 0, participantsJSON, token, status],
     function (err) {
-      if (err) return res.status(500).json({ message: "Error scheduling meeting" });
-      res.json({ message: "Meeting scheduled", meetingId: this.lastID });
+      if (err) return res.status(500).json({ message: "Failed to schedule meeting" });
+      res.json({ message: "Meeting scheduled", id: this.lastID });
     }
   );
 });
 
-// Get all meetings (staff)
-app.get("/meetings", (req, res) => {
-  db.all(`SELECT * FROM meetings`, [], (err, rows) => {
-    if (err) return res.status(500).json({ message: "Error fetching meetings" });
-    res.json(rows);
-  });
-});
+app.get("/meetings/:email", (req, res) => {
+  const email = req.params.email;
 
-// Get meetings by user
-app.get("/meetings/:userId", (req, res) => {
-  const { userId } = req.params;
-  db.all(`SELECT * FROM meetings WHERE createdBy = ?`, [userId], (err, rows) => {
-    if (err) return res.status(500).json({ message: "Error fetching meetings" });
-    res.json(rows);
-  });
+  db.all(
+    `SELECT * FROM meetings WHERE scheduler = ? OR participantEmail = ?`,
+    [email, email],
+    (err, rows) => {
+      if (err) return res.status(500).json({ message: "Failed to fetch meetings" });
+      // Parse participants JSON
+      const meetings = rows.map((m) => ({ ...m, participants: JSON.parse(m.participants || "[]") }));
+      res.json(meetings);
+    }
+  );
 });
-
-// Approve/Reject meeting (staff)
-app.patch("/meetings/:meetingId", (req, res) => {
-  const { meetingId } = req.params;
+app.patch("/meetings/:id", (req, res) => {
   const { status, approvedBy } = req.body;
+  const id = req.params.id;
+
   db.run(
     `UPDATE meetings SET status = ?, approvedBy = ? WHERE id = ?`,
-    [status, approvedBy, meetingId],
+    [status, approvedBy, id],
     function (err) {
-      if (err) return res.status(500).json({ message: "Error updating meeting" });
-      res.json({ message: "Meeting updated" });
+      if (err) return res.status(500).json({ message: "Failed to update status" });
+      res.json({ message: "Status updated" });
     }
   );
 });
+
 
 // Start server
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
