@@ -5,17 +5,53 @@ const cors = require("cors");
 const bcrypt = require("bcrypt");
 
 const app = express();
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 10000;
 
-// Use absolute path for SQLite in Render (optional, can use relative too)
-const path = require("path");
-const dbPath = path.join(__dirname, "meetpass.db");
+// Middlewares
+app.use(cors());
+app.use(bodyParser.json());
 
-const db = new sqlite3.Database(dbPath, (err) => {
+// Database setup
+const db = new sqlite3.Database("./meetpass.db", (err) => {
   if (err) console.error("DB Error: ", err.message);
   else console.log("Connected to meetpass.db");
 });
 
+// Create tables if not exist
+db.serialize(() => {
+  db.run(`
+    CREATE TABLE IF NOT EXISTS users (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT,
+      email TEXT UNIQUE,
+      password TEXT
+    )
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS meetings (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      createdBy INTEGER,
+      participantType TEXT,
+      participantEmail TEXT,
+      purpose TEXT,
+      venue TEXT,
+      startTime TEXT,
+      endTime TEXT,
+      isGroup INTEGER DEFAULT 0,
+      participants TEXT,
+      token TEXT UNIQUE,
+      status TEXT DEFAULT 'Pending',
+      approvedBy TEXT,
+      FOREIGN KEY (createdBy) REFERENCES users(id)
+    )
+  `);
+});
+
+// Root route for health check
+app.get("/", (req, res) => {
+  res.send("MeetPass Backend is running!");
+});
 
 // Signup API
 app.post("/signup", async (req, res) => {
@@ -54,7 +90,7 @@ app.post("/login", (req, res) => {
 // Schedule Meeting API
 app.post("/meetings", (req, res) => {
   const {
-    scheduler,
+    createdBy,
     participantType,
     participantEmail,
     purpose,
@@ -64,14 +100,18 @@ app.post("/meetings", (req, res) => {
     isGroup,
     participants,
     token,
-    status
+    status,
   } = req.body;
 
+  if (!createdBy || !purpose || !startTime || !endTime)
+    return res.status(400).json({ message: "All fields required" });
+
   db.run(
-    `INSERT INTO meetings (createdBy, participantType, participantEmail, purpose, venue, startTime, endTime, isGroup, participants, token, status)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO meetings 
+    (createdBy, participantType, participantEmail, purpose, venue, startTime, endTime, isGroup, participants, token, status) 
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
-      scheduler,
+      createdBy,
       participantType,
       participantEmail,
       purpose,
@@ -79,9 +119,9 @@ app.post("/meetings", (req, res) => {
       startTime,
       endTime,
       isGroup ? 1 : 0,
-      JSON.stringify(participants || []),
+      participants ? JSON.stringify(participants) : "",
       token,
-      status
+      status || "Pending",
     ],
     function (err) {
       if (err) return res.status(500).json({ message: "Error scheduling meeting" });
@@ -90,45 +130,36 @@ app.post("/meetings", (req, res) => {
   );
 });
 
-// Get all meetings (for staff)
+// Get all meetings (staff)
 app.get("/meetings", (req, res) => {
   db.all(`SELECT * FROM meetings`, [], (err, rows) => {
     if (err) return res.status(500).json({ message: "Error fetching meetings" });
-    const meetings = rows.map(m => ({ ...m, participants: JSON.parse(m.participants || '[]') }));
-    res.json(meetings);
+    res.json(rows);
   });
 });
 
-// Get meetings for a specific user
+// Get meetings by user
 app.get("/meetings/:userId", (req, res) => {
   const { userId } = req.params;
-  db.all(
-    `SELECT * FROM meetings WHERE createdBy = ?`,
-    [userId],
-    (err, rows) => {
-      if (err) return res.status(500).json({ message: "Error fetching meetings" });
-      const meetings = rows.map(m => ({ ...m, participants: JSON.parse(m.participants || '[]') }));
-      res.json(meetings);
-    }
-  );
+  db.all(`SELECT * FROM meetings WHERE createdBy = ?`, [userId], (err, rows) => {
+    if (err) return res.status(500).json({ message: "Error fetching meetings" });
+    res.json(rows);
+  });
 });
 
-// Approve/Reject Meeting
-app.patch("/meetings/:id", (req, res) => {
+// Approve/Reject meeting (staff)
+app.patch("/meetings/:meetingId", (req, res) => {
+  const { meetingId } = req.params;
   const { status, approvedBy } = req.body;
-  const { id } = req.params;
-
   db.run(
     `UPDATE meetings SET status = ?, approvedBy = ? WHERE id = ?`,
-    [status, approvedBy, id],
-    function(err) {
-      if (err) return res.status(500).json({ message: "Failed to update meeting" });
+    [status, approvedBy, meetingId],
+    function (err) {
+      if (err) return res.status(500).json({ message: "Error updating meeting" });
       res.json({ message: "Meeting updated" });
     }
   );
 });
-app.get("/", (req, res) => {
-  res.send("MeetPass Backend is running!");
-});
 
+// Start server
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
