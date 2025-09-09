@@ -13,41 +13,47 @@ const PORT = process.env.PORT || 10000;
 app.use(cors());
 app.use(bodyParser.json());
 
-// Database setup
+// ------------------- DATABASE SETUP -------------------
 const db = new sqlite3.Database("./meetpass.db", (err) => {
-  if (err) console.error("DB Error: ", err.message);
-  else console.log("Connected to meetpass.db");
-});
+  if (err) {
+    console.error("DB Error: ", err.message);
+  } else {
+    console.log("Connected to meetpass.db");
 
-// Create tables if not exist
-db.serialize(() => {
-  db.run(`
-    CREATE TABLE IF NOT EXISTS users (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT,
-      email TEXT UNIQUE,
-      password TEXT,
-      role TEXT DEFAULT 'student'
-    )
-  `);
+    // Create tables if not exist
+    db.serialize(() => {
+      db.run(`
+        CREATE TABLE IF NOT EXISTS users (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT,
+          email TEXT UNIQUE,
+          password TEXT,
+          role TEXT DEFAULT 'student'
+        )
+      `);
 
-  db.run(`
-    CREATE TABLE IF NOT EXISTS meetings (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      scheduler TEXT,
-      participantEmail TEXT,
-      purpose TEXT,
-      venue TEXT,
-      startTime TEXT,
-      endTime TEXT,
-      isGroup INTEGER DEFAULT 0,
-      participants TEXT,
-      token TEXT UNIQUE,
-      status TEXT DEFAULT 'Pending',
-      approvedBy TEXT
-    )
-  `);
+      db.run(`
+        CREATE TABLE IF NOT EXISTS meetings (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          scheduler TEXT,
+          participantEmail TEXT,
+          purpose TEXT,
+          venue TEXT,
+          startTime TEXT,
+          endTime TEXT,
+          isGroup INTEGER DEFAULT 0,
+          participants TEXT,
+          token TEXT UNIQUE,
+          status TEXT DEFAULT 'Pending',
+          approvedBy TEXT
+        )
+      `);
+
+      console.log("Tables are ready");
+    });
+  }
 });
+// ------------------------------------------------------
 
 // Root route for health check
 app.get("/", (req, res) => {
@@ -224,5 +230,6 @@ app.patch("/meetings/:id", (req, res) => {
 });
 // ------------------- END UPDATE STATUS -------------------
 
-// Start server
+// ------------------- START SERVER -------------------
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+// ------------------------------------------------------
