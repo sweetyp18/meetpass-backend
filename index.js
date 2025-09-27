@@ -284,3 +284,13 @@ app.get("/", (req, res) => {
 // ------------------- SERVER -------------------
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+// --- API endpoint to fetch all users ---
+app.get("/users", (req, res) => {
+  db.all("SELECT regno, name, email, role FROM users", [], (err, rows) => {
+    if (err) {
+      console.error("Failed to fetch users:", err);
+      return res.status(500).json({ message: "Failed to fetch users" });
+    }
+    res.json(rows);
+  });
+});
