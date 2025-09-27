@@ -10,6 +10,39 @@ app.use(express.json());
 
 // ------------------- DATABASE -------------------
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+async function runMigrations() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS users (
+      id SERIAL PRIMARY KEY,
+      regno TEXT UNIQUE,
+      name TEXT,
+      email TEXT UNIQUE,
+      password TEXT,
+      role TEXT DEFAULT 'student',
+      resetToken TEXT,
+      resetTokenExpiry BIGINT
+    );
+    CREATE TABLE IF NOT EXISTS meetings (
+      id SERIAL PRIMARY KEY,
+      scheduler TEXT,
+      participantEmail TEXT,
+      purpose TEXT,
+      venue TEXT,
+      startTime TEXT,
+      endTime TEXT,
+      isGroup BOOLEAN,
+      participants TEXT,
+      token TEXT,
+      status TEXT DEFAULT 'Pending',
+      approvedBy TEXT
+    );
+  `);
+}
+
+runMigrations().catch(err => {
+  console.error("DB migration error:", err);
+});
+
 
 // ------------------- SIGNUP -------------------
 app.post("/signup", async (req, res) => {
