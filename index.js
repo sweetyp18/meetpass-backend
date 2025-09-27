@@ -276,6 +276,10 @@ app.patch("/meetings/:id", (req, res) => {
     }
   );
 });
+app.get("/", (req, res) => {
+  res.send("meetpass running successfully");
+});
+
 
 // ------------------- SERVER -------------------
 const PORT = process.env.PORT || 5000;
