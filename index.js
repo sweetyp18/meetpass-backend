@@ -279,16 +279,30 @@ app.patch("/meetings/:id", (req, res) => {
 app.get("/", (req, res) => {
   res.send("meetpass running successfully");
 });
+// Delete user by regno
+app.delete("/users/:regno", (req, res) => {
+  const { regno } = req.params;
+  db.run(`DELETE FROM users WHERE regno = ?`, [regno], function(err) {
+    if (err) {
+      console.error("Error deleting user:", err);
+      return res.status(500).json({ message: "Failed to delete user" });
+    }
+    if (this.changes === 0) {
+      return res.status(404).json({ message: "User not found" });
+    }
+    res.json({ message: "User deleted successfully" });
+  });
+});
 
 
 // ------------------- SERVER -------------------
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
-// --- API endpoint to fetch all users ---
+// Route to get all users (for debugging/viewing data)
 app.get("/users", (req, res) => {
   db.all("SELECT regno, name, email, role FROM users", [], (err, rows) => {
     if (err) {
-      console.error("Failed to fetch users:", err);
+      console.error("Error fetching users", err);
       return res.status(500).json({ message: "Failed to fetch users" });
     }
     res.json(rows);
