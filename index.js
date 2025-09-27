@@ -117,34 +117,61 @@ const transporter = nodemailer.createTransport({
 // ------------------- FORGOT PASSWORD -------------------
 app.post("/forgot-password", (req, res) => {
   const { email } = req.body;
-  if (!email) return res.status(400).json({ message: "Email is required" });
+  console.log("Received forgot-password request for email:", email);
+
+  if (!email) {
+    console.log("Email not provided");
+    return res.status(400).json({ message: "Email is required" });
+  }
 
   db.get(`SELECT * FROM users WHERE email = ?`, [email], (err, user) => {
-    if (err || !user) return res.status(400).json({ message: "User not found" });
+    if (err) {
+      console.error("DB error while fetching user:", err);
+      return res.status(500).json({ message: "Internal server error" });
+    }
+    if (!user) {
+      console.log("User not found for email:", email);
+      return res.status(400).json({ message: "User not found" });
+    }
 
-    const resetToken = crypto.randomBytes(20).toString("hex");
-    const resetTokenExpiry = Date.now() + 3600_000; // 1 hour
-    const resetLink = `http://localhost:3000/reset-password/${resetToken}`;
+    try {
+      const resetToken = crypto.randomBytes(20).toString("hex");
+      const resetTokenExpiry = Date.now() + 3600_000; // 1 hour
+      const resetLink = `http://localhost:3000/reset-password/${resetToken}`;
 
-    db.run(
-      `UPDATE users SET resetToken = ?, resetTokenExpiry = ? WHERE email = ?`,
-      [resetToken, resetTokenExpiry, email],
-      (updateErr) => {
-        if (updateErr) return res.status(500).json({ message: "Error generating reset token" });
+      console.log("Generated reset token:", resetToken);
 
-        const mailOptions = {
-          from: process.env.EMAIL_USER,
-          to: user.email,
-          subject: "MeetPass - Password Reset",
-          text: `Hello ${user.name},\n\nClick to reset your password:\n${resetLink}\n\nIgnore if not requested.`,
-        };
+      db.run(
+        `UPDATE users SET resetToken = ?, resetTokenExpiry = ? WHERE email = ?`,
+        [resetToken, resetTokenExpiry, email],
+        (updateErr) => {
+          if (updateErr) {
+            console.error("Error updating reset token in DB:", updateErr);
+            return res.status(500).json({ message: "Error generating reset token" });
+          }
+          console.log("Reset token updated in DB, sending email...");
 
-        transporter.sendMail(mailOptions, (error) => {
-          if (error) return res.status(500).json({ message: "Failed to send email" });
-          res.json({ message: "Password reset link sent to registered email" });
-        });
-      }
-    );
+          const mailOptions = {
+            from: process.env.EMAIL_USER,
+            to: user.email,
+            subject: "MeetPass - Password Reset",
+            text: `Hello ${user.name},\n\nClick to reset your password:\n${resetLink}\n\nIgnore if not requested.`,
+          };
+
+          transporter.sendMail(mailOptions, (error) => {
+            if (error) {
+              console.error("Failed to send email:", error);
+              return res.status(500).json({ message: "Failed to send email" });
+            }
+            console.log("Password reset email sent successfully to:", user.email);
+            res.json({ message: "Password reset link sent to registered email" });
+          });
+        }
+      );
+    } catch (ex) {
+      console.error("Exception in forgot-password:", ex);
+      return res.status(500).json({ message: "Internal server error" });
+    }
   });
 });
 
