@@ -1,6 +1,6 @@
 const express = require("express");
 const bcrypt = require("bcryptjs");
-const { Pool } = require("pg"); // changed to pg
+const sqlite3 = require("sqlite3").verbose();
 const nodemailer = require("nodemailer");
 const crypto = require("crypto");
 require("dotenv").config();
@@ -9,46 +9,40 @@ const app = express();
 app.use(express.json());
 
 // ------------------- DATABASE -------------------
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: {
-    rejectUnauthorized: false
-  }
+const db = new sqlite3.Database("./meetpass.db", (err) => {
+  if (err) console.error("DB Error:", err.message);
+  else console.log("✅ Connected to SQLite database");
 });
+// Create tables if not exist
+db.run(
+  `CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    regno TEXT UNIQUE,
+    name TEXT,
+    email TEXT UNIQUE,
+    password TEXT,
+    role TEXT DEFAULT 'student',
+    resetToken TEXT,
+    resetTokenExpiry INTEGER
+  )`
+);
 
-async function runMigrations() {
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS users (
-      id SERIAL PRIMARY KEY,
-      regno TEXT UNIQUE,
-      name TEXT,
-      email TEXT UNIQUE,
-      password TEXT,
-      role TEXT DEFAULT 'student',
-      resetToken TEXT,
-      resetTokenExpiry BIGINT
-    );
-    CREATE TABLE IF NOT EXISTS meetings (
-      id SERIAL PRIMARY KEY,
-      scheduler TEXT,
-      participantEmail TEXT,
-      purpose TEXT,
-      venue TEXT,
-      startTime TEXT,
-      endTime TEXT,
-      isGroup BOOLEAN,
-      participants TEXT,
-      token TEXT,
-      status TEXT DEFAULT 'Pending',
-      approvedBy TEXT
-    );
-  `);
-}
-
-runMigrations().catch(err => {
-  console.error("DB migration error:", err);
-});
-
+db.run(
+  `CREATE TABLE IF NOT EXISTS meetings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    scheduler TEXT,
+    participantEmail TEXT,
+    purpose TEXT,
+    venue TEXT,
+    startTime TEXT,
+    endTime TEXT,
+    isGroup INTEGER,
+    participants TEXT,
+    token TEXT,
+    status TEXT DEFAULT 'Pending',
+    approvedBy TEXT
+  )`
+);
 
 // ------------------- SIGNUP -------------------
 app.post("/signup", async (req, res) => {
@@ -58,19 +52,20 @@ app.post("/signup", async (req, res) => {
   }
   try {
     const hashedPassword = await bcrypt.hash(password, 10);
-    try {
-      await pool.query(
-        `INSERT INTO users (regno, name, email, password, role) VALUES ($1, $2, $3, $4, $5)`,
-        [regno, name, email, hashedPassword, role]
-      );
-      res.status(201).json({ message: "User registered successfully" });
-    } catch (err) {
-      if (err.code === '23505') { // unique violation
-        return res.status(409).json({ message: "User already exists" });
+    db.run(
+      `INSERT INTO users (regno, name, email, password, role) VALUES (?, ?, ?, ?, ?)`,
+      [regno, name, email, hashedPassword, role],
+      function (err) {
+        if (err) {
+          if (err.message.includes("UNIQUE constraint failed")) {
+            return res.status(409).json({ message: "User already exists" });
+          }
+          console.error("DB error during signup:", err);
+          return res.status(500).json({ message: "Registration failed" });
+        }
+        res.status(201).json({ message: "User registered successfully" });
       }
-      console.error("DB error during signup:", err);
-      return res.status(500).json({ message: "Registration failed" });
-    }
+    );
   } catch (err) {
     console.error("Hashing error:", err);
     res.status(500).json({ message: "Server error during registration" });
@@ -78,19 +73,15 @@ app.post("/signup", async (req, res) => {
 });
 
 // ------------------- LOGIN -------------------
-app.post("/login-regno", async (req, res) => {
+app.post("/login-regno", (req, res) => {
   const { regno, password } = req.body;
   if (!regno || !password) {
     return res.status(400).json({ message: "Please enter RegNo and password" });
   }
-  try {
-    const result = await pool.query(`SELECT * FROM users WHERE regno = $1`, [regno]);
-    const user = result.rows[0];
-    if (!user) return res.status(400).json({ message: "Invalid RegNo or password" });
-
+  db.get(`SELECT * FROM users WHERE regno = ?`, [regno], async (err, user) => {
+    if (err || !user) return res.status(400).json({ message: "Invalid RegNo or password" });
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) return res.status(400).json({ message: "Invalid RegNo or password" });
-
     res.json({
       message: "Login successful",
       user: {
@@ -100,25 +91,20 @@ app.post("/login-regno", async (req, res) => {
         role: user.role,
       },
     });
-  } catch (err) {
-    res.status(500).json({ message: "Server error during login" });
-  }
+  });
 });
 
 // ------------------- DASHBOARD -------------------
-app.get("/dashboard/:regno", async (req, res) => {
+app.get("/dashboard/:regno", (req, res) => {
   const { regno } = req.params;
-  try {
-    const result = await pool.query(
-      `SELECT regno, name, email, role FROM users WHERE regno = $1`,
-      [regno]
-    );
-    const user = result.rows[0];
-    if (!user) return res.status(404).json({ message: "User not found" });
-    res.json({ user });
-  } catch (err) {
-    res.status(500).json({ message: "Server error" });
-  }
+  db.get(
+    `SELECT regno, name, email, role FROM users WHERE regno = ?`,
+    [regno],
+    (err, user) => {
+      if (err || !user) return res.status(404).json({ message: "User not found" });
+      res.json({ user });
+    }
+  );
 });
 
 // ------------------- EMAIL TRANSPORTER -------------------
@@ -131,82 +117,59 @@ const transporter = nodemailer.createTransport({
 });
 
 // ------------------- FORGOT PASSWORD -------------------
-app.post("/forgot-password", async (req, res) => {
+app.post("/forgot-password", (req, res) => {
   const { email } = req.body;
-  console.log("Received forgot-password request for email:", email);
-
   if (!email) {
-    console.log("Email not provided");
     return res.status(400).json({ message: "Email is required" });
   }
-
-  try {
-    const result = await pool.query(`SELECT * FROM users WHERE email = $1`, [email]);
-    const user = result.rows[0];
-    if (!user) {
-      console.log("User not found for email:", email);
-      return res.status(400).json({ message: "User not found" });
-    }
-
+  db.get(`SELECT * FROM users WHERE email = ?`, [email], (err, user) => {
+    if (err) return res.status(500).json({ message: "Internal server error" });
+    if (!user) return res.status(400).json({ message: "User not found" });
     const resetToken = crypto.randomBytes(20).toString("hex");
     const resetTokenExpiry = Date.now() + 3600_000; // 1 hour
     const resetLink = `http://localhost:3000/reset-password/${resetToken}`;
-
-    console.log("Generated reset token:", resetToken);
-
-    await pool.query(
-      `UPDATE users SET resetToken = $1, resetTokenExpiry = $2 WHERE email = $3`,
-      [resetToken, resetTokenExpiry, email]
-    );
-
-    console.log("Reset token updated in DB, sending email...");
-
-    const mailOptions = {
-      from: process.env.EMAIL_USER,
-      to: user.email,
-      subject: "MeetPass - Password Reset",
-      text: `Hello ${user.name},\n\nClick to reset your password:\n${resetLink}\n\nIgnore if not requested.`,
-    };
-
-    transporter.sendMail(mailOptions, (error) => {
-      if (error) {
-        console.error("Failed to send email:", error);
-        return res.status(500).json({ message: "Failed to send email" });
+    db.run(
+      `UPDATE users SET resetToken = ?, resetTokenExpiry = ? WHERE email = ?`,
+      [resetToken, resetTokenExpiry, email],
+      (updateErr) => {
+        if (updateErr) return res.status(500).json({ message: "Error generating reset token" });
+        const mailOptions = {
+          from: process.env.EMAIL_USER,
+          to: user.email,
+          subject: "MeetPass - Password Reset",
+          text: `Hello ${user.name},\n\nClick to reset your password:\n${resetLink}\n\nIgnore if not requested.`,
+        };
+        transporter.sendMail(mailOptions, (error) => {
+          if (error) return res.status(500).json({ message: "Failed to send email" });
+          res.json({ message: "Password reset link sent to registered email" });
+        });
       }
-      console.log("Password reset email sent successfully to:", user.email);
-      res.json({ message: "Password reset link sent to registered email" });
-    });
-  } catch (ex) {
-    console.error("Exception in forgot-password:", ex);
-    return res.status(500).json({ message: "Internal server error" });
-  }
+    );
+  });
 });
 
 // ------------------- RESET PASSWORD -------------------
-app.post("/reset-password/:token", async (req, res) => {
+app.post("/reset-password/:token", (req, res) => {
   const { token } = req.params;
   const { newPassword } = req.body;
   if (!newPassword) return res.status(400).json({ message: "New password required" });
-
-  try {
-    const result = await pool.query(`SELECT * FROM users WHERE resetToken = $1`, [token]);
-    const user = result.rows[0];
-    if (!user) return res.status(400).json({ message: "Invalid or expired token" });
+  db.get(`SELECT * FROM users WHERE resetToken = ?`, [token], async (err, user) => {
+    if (err || !user) return res.status(400).json({ message: "Invalid or expired token" });
     if (Date.now() > user.resetTokenExpiry) return res.status(400).json({ message: "Token expired" });
-
     const hashedPassword = await bcrypt.hash(newPassword, 10);
-    await pool.query(
-      `UPDATE users SET password = $1, resetToken = NULL, resetTokenExpiry = NULL WHERE id = $2`,
-      [hashedPassword, user.id]
+    db.run(
+      `UPDATE users SET password = ?, resetToken = NULL, resetTokenExpiry = NULL WHERE id = ?`,
+      [hashedPassword, user.id],
+      (updateErr) => {
+        if (updateErr) return res.status(500).json({ message: "Failed to reset password" });
+        res.json({ message: "Password reset successful" });
+      }
     );
-    res.json({ message: "Password reset successful" });
-  } catch (err) {
-    res.status(500).json({ message: "Failed to reset password" });
-  }
+  });
 });
 
 // ------------------- SCHEDULE MEETING -------------------
-app.post("/meetings", async (req, res) => {
+app.post("/meetings", (req, res) => {
   const {
     scheduler,
     participantEmail,
@@ -220,36 +183,36 @@ app.post("/meetings", async (req, res) => {
     status,
   } = req.body;
 
-  try {
-    await pool.query(
-      `INSERT INTO meetings 
-      (scheduler, participantEmail, purpose, venue, startTime, endTime, isGroup, participants, token, status)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-      [
-        scheduler,
-        participantEmail,
-        purpose,
-        venue,
-        startTime,
-        endTime,
-        isGroup,
-        JSON.stringify(participants || []),
-        token,
-        status || "Pending",
-      ]
-    );
-
-    let recipients = [scheduler, participantEmail];
-    if (isGroup && participants && participants.length > 0) {
-      recipients = recipients.concat(participants);
-    }
-    recipients = [...new Set(recipients)];
-
-    const mailOptions = {
-      from: process.env.EMAIL_USER,
-      to: recipients,
-      subject: `Meeting Scheduled: ${token}`,
-      text: `
+  db.run(
+    `INSERT INTO meetings 
+    (scheduler, participantEmail, purpose, venue, startTime, endTime, isGroup, participants, token, status)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      scheduler,
+      participantEmail,
+      purpose,
+      venue,
+      startTime,
+      endTime,
+      isGroup ? 1 : 0,
+      JSON.stringify(participants || []),
+      token,
+      status || "Pending",
+    ],
+    function (err) {
+      if (err) {
+        return res.status(500).json({ message: "Failed to schedule meeting" });
+      }
+      let recipients = [scheduler, participantEmail];
+      if (isGroup && participants && participants.length > 0) {
+        recipients = recipients.concat(participants);
+      }
+      recipients = [...new Set(recipients)];
+      const mailOptions = {
+        from: process.env.EMAIL_USER,
+        to: recipients,
+        subject: `Meeting Scheduled: ${token}`,
+        text: `
 Hello,
 
 A meeting has been scheduled.
@@ -264,72 +227,62 @@ Token: ${token}
 
 Thank you,
 MeetPass
-      `,
-    };
-
-    transporter.sendMail(mailOptions, (emailErr) => {
-      if (emailErr) console.error("Failed to send meeting email:", emailErr);
-      else console.log("✅ Meeting email sent to:", recipients.join(", "));
-    });
-
-    res.json({ message: "Meeting scheduled successfully" });
-  } catch (err) {
-    console.error("Error saving meeting:", err);
-    return res.status(500).json({ message: "Failed to schedule meeting" });
-  }
+        `,
+      };
+      transporter.sendMail(mailOptions, (emailErr) => {
+        if (emailErr) console.error("Failed to send meeting email:", emailErr);
+      });
+      res.json({ message: "Meeting scheduled successfully", meetingId: this.lastID });
+    }
+  );
 });
 
 // ------------------- GET MEETINGS -------------------
-app.get("/meetings/:email", async (req, res) => {
+app.get("/meetings/:email", (req, res) => {
   const userEmail = req.params.email;
-  try {
-    const result = await pool.query(
-      `SELECT * FROM meetings WHERE scheduler = $1 OR participantEmail = $2`,
-      [userEmail, userEmail]
-    );
-    res.json(result.rows);
-  } catch (err) {
-    res.status(500).json({ message: "Failed to fetch meetings" });
-  }
+  db.all(
+    `SELECT * FROM meetings WHERE scheduler = ? OR participantEmail = ?`,
+    [userEmail, userEmail],
+    (err, rows) => {
+      if (err) return res.status(500).json({ message: "Failed to fetch meetings" });
+      res.json(rows);
+    }
+  );
 });
 
 // ------------------- UPDATE MEETING STATUS -------------------
-app.patch("/meetings/:id", async (req, res) => {
+app.patch("/meetings/:id", (req, res) => {
   const { id } = req.params;
   const { status, approvedBy } = req.body;
 
-  try {
-    await pool.query(
-      `UPDATE meetings SET status = $1, approvedBy = $2 WHERE id = $3`,
-      [status, approvedBy, id]
-    );
-    res.json({ message: "Meeting status updated" });
-  } catch (err) {
-    res.status(500).json({ message: "Failed to update meeting" });
-  }
+  db.run(
+    `UPDATE meetings SET status = ?, approvedBy = ? WHERE id = ?`,
+    [status, approvedBy, id],
+    function (err) {
+      if (err) return res.status(500).json({ message: "Failed to update meeting" });
+      res.json({ message: "Meeting status updated" });
+    }
+  );
+});
+
+app.get("/", (req, res) => {
+  res.send("meetpass running successfully");
 });
 
 // ------------------- DELETE USER -------------------
-app.delete("/users/:regno", async (req, res) => {
+app.delete("/users/:regno", (req, res) => {
   const { regno } = req.params;
-  try {
-    const result = await pool.query(`DELETE FROM users WHERE regno = $1`, [regno]);
-    if (result.rowCount === 0) {
-      return res.status(404).json({ message: "User not found" });
-    }
+  db.run(`DELETE FROM users WHERE regno = ?`, [regno], function (err) {
+    if (err) return res.status(500).json({ message: "Failed to delete user" });
+    if (this.changes === 0) return res.status(404).json({ message: "User not found" });
     res.json({ message: "User deleted successfully" });
-  } catch (err) {
-    res.status(500).json({ message: "Failed to delete user" });
-  }
+  });
 });
 
-// ------------------- ROUTE TO GET ALL USERS -------------------
-app.get("/users", async (req, res) => {
-  try {
-    const result = await pool.query("SELECT regno, name, email, role FROM users");
-    res.json(result.rows);
-  } catch (err) {
-    console.error("Error fetching users", err);
-    res.status(500).json({ message: "Failed to fetch users" });
-  }
+// ------------------- GET ALL USERS -------------------
+app.get("/users", (req, res) => {
+  db.all("SELECT regno, name, email, role FROM users", [], (err, rows) => {
+    if (err) return res.status(500).json({ message: "Failed to fetch users" });
+    res.json(rows);
+  });
 });
