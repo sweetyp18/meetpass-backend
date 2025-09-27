@@ -1,16 +1,20 @@
 {
   "name": "meetpass-backend",
   "version": "1.0.0",
-  "description": "MeetPass backend server",
+  "description": "Backend server for MeetPass",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
+  "engines": {
+    "node": "22.x"
+  },
   "dependencies": {
     "bcryptjs": "^2.4.3",
+    "dotenv": "^16.3.1",
     "express": "^4.18.2",
     "nodemailer": "^6.9.4",
-    "sqlite3": "^5.1.6",
-    "dotenv": "^16.3.1"
+    "pg": "^8.16.3",
+    "sqlite3": "^5.1.6"
   }
 }
