@@ -56,9 +56,13 @@ db.run(
 );
 
 // ---------- Email (nodemailer) ----------
-const sgMail = require("@sendgrid/mail");
-sgMail.setApiKey(process.env.SENDGRID_API_KEY);
-
+const transporter = nodemailer.createTransport({
+  service: "gmail",
+  auth: {
+    user: process.env.EMAIL_USER, // your gmail
+    pass: process.env.EMAIL_PASS, // 16-char app password
+  },
+});
 
 // ---------- Helpers ----------
 function signJwt(payload) {
@@ -172,49 +176,8 @@ app.get("/dashboard/:regno", authenticateToken, (req, res) => {
     }
   );
 });
-
-// -------------- forget password (protected) --------------
-app.post("/forgot-password", (req, res) => {
-  const { email } = req.body;
-  if (!email) return res.status(400).json({ message: "Email is required" });
-
-  db.get(`SELECT * FROM users WHERE email = ?`, [email], (err, user) => {
-    if (err) return res.status(500).json({ message: "Server error" });
-    if (!user) return res.status(400).json({ message: "User not found" });
-
-    const resetToken = crypto.randomBytes(20).toString("hex");
-    const resetTokenExpiry = Date.now() + 3600_000; // 1 hour
-    const resetLink = `${process.env.FRONTEND_URL}/reset-password/${resetToken}`;
-
-    db.run(
-      `UPDATE users SET resetToken = ?, resetTokenExpiry = ? WHERE email = ?`,
-      [resetToken, resetTokenExpiry, email],
-      (updateErr) => {
-        if (updateErr) return res.status(500).json({ message: "Error generating reset token" });
-
-        const msg = {
-          to: user.email,
-          from: process.env.EMAIL_FROM,
-          subject: "MeetPass - Password Reset",
-          text: `Hello ${user.name},\nClick here to reset your password: ${resetLink}\nThis link will expire in 1 hour.`,
-          html: `<p>Hello ${user.name},</p><p>Click here to reset your password: <a href="${resetLink}">${resetLink}</a></p><p>This link will expire in 1 hour.</p>`
-        };
-
-        sgMail.send(msg)
-          .then(() => res.json({ message: "Password reset link sent to registered email" }))
-          .catch(error => {
-            console.error("SendGrid error:", error);
-            res.status(500).json({ message: "Failed to send email" });
-          });
-      }
-    );
-  });
-});
-
-
-
-// ------------------- RESET PASSWORD -------------------
-app.post("/reset-password/:token", async (req, res) => {
+// -------------- reset (protected) --------------
+ app.post("/reset-password/:token", async (req, res) => {
   const { token } = req.params;
   const { newPassword } = req.body;
 
@@ -227,31 +190,67 @@ app.post("/reset-password/:token", async (req, res) => {
     [token, now],
     async (err, user) => {
       if (err) {
-        console.error("DB error when fetching reset token:", err);
+        console.error("DB error:", err);
         return res.status(500).json({ message: "Server error" });
       }
       if (!user) return res.status(400).json({ message: "Invalid or expired reset link" });
 
       try {
         const hashedPassword = await bcrypt.hash(newPassword, 10);
-
         db.run(
           `UPDATE users SET password = ?, resetToken = NULL, resetTokenExpiry = NULL WHERE regno = ?`,
           [hashedPassword, user.regno],
           (updateErr) => {
             if (updateErr) {
-              console.error("DB error during password reset:", updateErr);
+              console.error("DB update error:", updateErr);
               return res.status(500).json({ message: "Error resetting password" });
             }
             res.json({ message: "Password reset successfully" });
           }
         );
       } catch (hashErr) {
-        console.error("Hash error:", hashErr);
+        console.error("Hashing error:", hashErr);
         res.status(500).json({ message: "Error resetting password" });
       }
     }
   );
+});
+// -------------forget password (protected) --------------
+app.post("/forgot-password", (req, res) => {
+  const { email } = req.body;
+  if (!email) return res.status(400).json({ message: "Email is required" });
+
+  db.get(`SELECT * FROM users WHERE email = ?`, [email], (err, user) => {
+    if (err || !user) return res.status(400).json({ message: "User not found" });
+
+    const resetToken = crypto.randomBytes(20).toString("hex");
+    const resetTokenExpiry = Date.now() + 3600_000; // 1 hour
+    const resetLink = `${process.env.FRONTEND_URL}/reset-password/${resetToken}`;
+
+    db.run(
+      `UPDATE users SET resetToken = ?, resetTokenExpiry = ? WHERE email = ?`,
+      [resetToken, resetTokenExpiry, email],
+      (updateErr) => {
+        if (updateErr) return res.status(500).json({ message: "Error generating reset token" });
+
+        const mailOptions = {
+          from: process.env.EMAIL_FROM,
+          to: user.email,
+          subject: "MeetPass - Password Reset",
+          text: `Hello ${user.name},\nClick here to reset your password: ${resetLink}\nThis link will expire in 1 hour.`,
+          html: `<p>Hello ${user.name},</p><p>Click here to reset your password: <a href="${resetLink}">${resetLink}</a></p><p>This link will expire in 1 hour.</p>`
+        };
+
+        transporter.sendMail(mailOptions, (error, info) => {
+          if (error) {
+            console.error("Failed to send email:", error);
+            return res.status(500).json({ message: "Failed to send email" });
+          }
+          res.json({ message: "Password reset link sent to registered email" });
+        });
+      }
+    );
+  });
 });
 
 // -------------- SCHEDULE MEETING (protected, improved) --------------
