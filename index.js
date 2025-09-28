@@ -56,13 +56,9 @@ db.run(
 );
 
 // ---------- Email (nodemailer) ----------
-const transporter = nodemailer.createTransport({
-  service: "gmail",
-  auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS, // use app password for Gmail
-  },
-});
+const sgMail = require("@sendgrid/mail");
+sgMail.setApiKey(process.env.SENDGRID_API_KEY);
+
 
 // ---------- Helpers ----------
 function signJwt(payload) {
@@ -176,49 +172,46 @@ app.get("/dashboard/:regno", authenticateToken, (req, res) => {
     }
   );
 });
-// ------------------- FORGOT PASSWORD -------------------
+
+// -------------- forget password (protected) --------------
 app.post("/forgot-password", (req, res) => {
   const { email } = req.body;
   if (!email) return res.status(400).json({ message: "Email is required" });
 
   db.get(`SELECT * FROM users WHERE email = ?`, [email], (err, user) => {
-    if (err) {
-      console.error("DB error /forgot-password:", err);
-      return res.status(500).json({ message: "Server error" });
-    }
+    if (err) return res.status(500).json({ message: "Server error" });
     if (!user) return res.status(400).json({ message: "User not found" });
 
     const resetToken = crypto.randomBytes(20).toString("hex");
     const resetTokenExpiry = Date.now() + 3600_000; // 1 hour
-    const resetLink = `http://localhost:3000/reset-password/${resetToken}`;
+    const resetLink = `${process.env.FRONTEND_URL}/reset-password/${resetToken}`;
 
     db.run(
       `UPDATE users SET resetToken = ?, resetTokenExpiry = ? WHERE email = ?`,
       [resetToken, resetTokenExpiry, email],
       (updateErr) => {
-        if (updateErr) {
-          console.error("DB error storing reset token:", updateErr);
-          return res.status(500).json({ message: "Error generating reset token" });
-        }
+        if (updateErr) return res.status(500).json({ message: "Error generating reset token" });
 
-        const mailOptions = {
-          from: process.env.EMAIL_USER,
+        const msg = {
           to: user.email,
+          from: process.env.EMAIL_FROM,
           subject: "MeetPass - Password Reset",
-          text: `Hello ${user.name},\n\nClick the link below to reset your password:\n${resetLink}\n\nThis link will expire in 1 hour.\nIf you didn't request this, ignore this email.\n\n— MeetPass`,
+          text: `Hello ${user.name},\nClick here to reset your password: ${resetLink}\nThis link will expire in 1 hour.`,
+          html: `<p>Hello ${user.name},</p><p>Click here to reset your password: <a href="${resetLink}">${resetLink}</a></p><p>This link will expire in 1 hour.</p>`
         };
 
-        transporter.sendMail(mailOptions, (mailErr) => {
-          if (mailErr) {
-            console.error("Failed to send email:", mailErr);
-            return res.status(500).json({ message: "Failed to send email" });
-          }
-          res.json({ message: "Password reset link sent to registered email" });
-        });
+        sgMail.send(msg)
+          .then(() => res.json({ message: "Password reset link sent to registered email" }))
+          .catch(error => {
+            console.error("SendGrid error:", error);
+            res.status(500).json({ message: "Failed to send email" });
+          });
       }
     );
   });
 });
+
+
 
 // ------------------- RESET PASSWORD -------------------
 app.post("/reset-password/:token", async (req, res) => {
