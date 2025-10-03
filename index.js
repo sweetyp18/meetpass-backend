@@ -6,7 +6,6 @@ const nodemailer = require("nodemailer");
 const crypto = require("crypto");
 const jwt = require("jsonwebtoken");
 const cors = require("cors");
-const { promisify } = require("util");
 
 const app = express();
 app.use(express.json());
@@ -23,7 +22,7 @@ const db = new sqlite3.Database("./meetpass.db", (err) => {
   else console.log("✅ Connected to SQLite database");
 });
 
-// promisify db.run/get/all if needed (we'll use callbacks mostly for sqlite)
+// Create tables if not exist
 db.run(
   `CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -155,26 +154,6 @@ app.post("/login-regno", (req, res) => {
   });
 });
 
-// -------------- DASHBOARD (protected) --------------
-app.get("/dashboard/:regno", authenticateToken, (req, res) => {
-  const { regno } = req.params;
-  // optional: allow only if req.user.regno === regno or if admin/staff
-  if (req.user.regno !== regno && req.user.role !== "staff") {
-    return res.status(403).json({ message: "Forbidden: cannot view other user's dashboard" });
-  }
-  db.get(
-    `SELECT regno, name, email, role FROM users WHERE regno = ?`,
-    [regno],
-    (err, user) => {
-      if (err) {
-        console.error("DB error /dashboard:", err);
-        return res.status(500).json({ message: "Server error" });
-      }
-      if (!user) return res.status(404).json({ message: "User not found" });
-      res.json({ user });
-    }
-  );
-});
 // ----------------- FORGOT PASSWORD -----------------
 app.post("/forgot-password", (req, res) => {
   const { email } = req.body;
@@ -182,25 +161,32 @@ app.post("/forgot-password", (req, res) => {
 
   db.get(`SELECT * FROM users WHERE email = ?`, [email], (err, user) => {
     if (err) return res.status(500).json({ message: "Server error" });
-    if (!user) return res.status(404).json({ message: "User not found" });
+    if (!user) {
+      // Generic response for security
+      return res.json({ message: "If an account exists with that email, a reset link will be sent" });
+    }
 
     const resetToken = crypto.randomBytes(20).toString("hex");
-    const resetTokenExpiry = Date.now() + 3600_000; // 1 hour
+    const hashedResetToken = hashToken(resetToken); // store hashed token
+    const resetTokenExpiry = Date.now() + 3600_000; // 1 hour expiry
     const resetLink = `${process.env.FRONTEND_URL}/reset-password/${resetToken}`;
 
     db.run(
       `UPDATE users SET resetToken = ?, resetTokenExpiry = ? WHERE email = ?`,
-      [resetToken, resetTokenExpiry, email],
+      [hashedResetToken, resetTokenExpiry, email],
       (updateErr) => {
-        if (updateErr) return res.status(500).json({ message: "Error generating reset token" });
+        if (updateErr) return res.status(500).json({ message: "Error saving reset token" });
 
         const mailOptions = {
           from: process.env.EMAIL_FROM,
           to: user.email,
           subject: "MeetPass - Password Reset",
-          html: `<p>Hello ${user.name},</p>
-                 <p>Click here to reset your password: <a href="${resetLink}">${resetLink}</a></p>
-                 <p>This link will expire in 1 hour.</p>`
+          html: `
+            <p>Hello ${user.name || ""},</p>
+            <p>You requested a password reset.</p>
+            <p>Click here: <a href="${resetLink}">${resetLink}</a></p>
+            <p>This link expires in 1 hour.</p>
+          `
         };
 
         transporter.sendMail(mailOptions, (error) => {
@@ -208,7 +194,7 @@ app.post("/forgot-password", (req, res) => {
             console.error("Failed to send email:", error);
             return res.status(500).json({ message: "Failed to send email" });
           }
-          res.json({ message: "Password reset link sent to registered email" });
+          res.json({ message: "If an account exists with that email, a reset link will be sent" });
         });
       }
     );
@@ -222,25 +208,31 @@ app.post("/reset-password/:token", async (req, res) => {
 
   if (!newPassword) return res.status(400).json({ message: "New password is required" });
 
+  const hashedToken = hashToken(token); // compare hashed token
   const now = Date.now();
-  db.get(`SELECT * FROM users WHERE resetToken = ? AND resetTokenExpiry > ?`, [token, now], async (err, user) => {
-    if (err) return res.status(500).json({ message: "Server error" });
-    if (!user) return res.status(400).json({ message: "Invalid or expired reset link" });
 
-    try {
-      const hashedPassword = await bcrypt.hash(newPassword, 10);
-      db.run(
-        `UPDATE users SET password = ?, resetToken = NULL, resetTokenExpiry = NULL WHERE id = ?`,
-        [hashedPassword, user.id],
-        (updateErr) => {
-          if (updateErr) return res.status(500).json({ message: "Error resetting password" });
-          res.json({ message: "Password reset successfully" });
-        }
-      );
-    } catch (hashErr) {
-      res.status(500).json({ message: "Error hashing password" });
+  db.get(
+    `SELECT * FROM users WHERE resetToken = ? AND resetTokenExpiry > ?`,
+    [hashedToken, now],
+    async (err, user) => {
+      if (err) return res.status(500).json({ message: "Server error" });
+      if (!user) return res.status(400).json({ message: "Invalid or expired reset link" });
+
+      try {
+        const hashedPassword = await bcrypt.hash(newPassword, 10);
+        db.run(
+          `UPDATE users SET password = ?, resetToken = NULL, resetTokenExpiry = NULL WHERE id = ?`,
+          [hashedPassword, user.id],
+          (updateErr) => {
+            if (updateErr) return res.status(500).json({ message: "Error resetting password" });
+            res.json({ message: "Password reset successfully" });
+          }
+        );
+      } catch (hashErr) {
+        res.status(500).json({ message: "Error hashing password" });
+      }
     }
-  });
+  );
 });
 
 // -------------- SCHEDULE MEETING (protected, improved) --------------
