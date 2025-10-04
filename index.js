@@ -14,7 +14,7 @@ app.use(cors()); // Allow requests from front-end. Configure origin in productio
 // ---------- Config ----------
 const PORT = process.env.PORT || 5000;
 const JWT_SECRET = process.env.JWT_SECRET || "please_change_this_secret";
-const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || "7d"; // token lifetime
+const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || "30d"; // token lifetime
 
 // ---------- DB ----------
 const db = new sqlite3.Database("./meetpass.db", (err) => {
