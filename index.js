@@ -162,38 +162,29 @@ app.post("/forgot-password", (req, res) => {
   db.get(`SELECT * FROM users WHERE email = ?`, [email], (err, user) => {
     if (err) return res.status(500).json({ message: "Server error" });
     if (!user) {
-      // Generic response for security
+      // Always send generic message
       return res.json({ message: "If an account exists with that email, a reset link will be sent" });
     }
 
-    const resetToken = crypto.randomBytes(20).toString("hex");
-    const hashedResetToken = hashToken(resetToken); // store hashed token
+    const resetToken = crypto.randomBytes(20).toString("hex"); // plain token
     const resetTokenExpiry = Date.now() + 3600_000; // 1 hour expiry
-    const resetLink = `${process.env.FRONTEND_URL}/reset-password/${resetToken}`;
 
     db.run(
       `UPDATE users SET resetToken = ?, resetTokenExpiry = ? WHERE email = ?`,
-      [hashedResetToken, resetTokenExpiry, email],
+      [resetToken, resetTokenExpiry, email],
       (updateErr) => {
         if (updateErr) return res.status(500).json({ message: "Error saving reset token" });
 
+        const resetLink = `${process.env.FRONTEND_URL}/reset-password/${resetToken}`;
         const mailOptions = {
           from: process.env.EMAIL_FROM,
-          to: user.email,
+          to: email,
           subject: "MeetPass - Password Reset",
-          html: `
-            <p>Hello ${user.name || ""},</p>
-            <p>You requested a password reset.</p>
-            <p>Click here: <a href="${resetLink}">${resetLink}</a></p>
-            <p>This link expires in 1 hour.</p>
-          `
+          html: `<p>Click here to reset your password:</p><a href="${resetLink}">${resetLink}</a>`
         };
 
         transporter.sendMail(mailOptions, (error) => {
-          if (error) {
-            console.error("Failed to send email:", error);
-            return res.status(500).json({ message: "Failed to send email" });
-          }
+          if (error) return res.status(500).json({ message: "Failed to send email" });
           res.json({ message: "If an account exists with that email, a reset link will be sent" });
         });
       }
@@ -201,19 +192,16 @@ app.post("/forgot-password", (req, res) => {
   });
 });
 
-// ----------------- RESET PASSWORD -----------------
+// Reset Password
 app.post("/reset-password/:token", async (req, res) => {
   const { token } = req.params;
   const { newPassword } = req.body;
-
   if (!newPassword) return res.status(400).json({ message: "New password is required" });
 
-  const hashedToken = hashToken(token); // compare hashed token
   const now = Date.now();
-
   db.get(
     `SELECT * FROM users WHERE resetToken = ? AND resetTokenExpiry > ?`,
-    [hashedToken, now],
+    [token, now],
     async (err, user) => {
       if (err) return res.status(500).json({ message: "Server error" });
       if (!user) return res.status(400).json({ message: "Invalid or expired reset link" });
