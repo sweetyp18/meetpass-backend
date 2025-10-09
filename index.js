@@ -147,10 +147,10 @@ app.post("/login-regno", (req, res) => {
   });
 });
 
-
 const sgMail = require("@sendgrid/mail");
 sgMail.setApiKey(process.env.EMAIL_PASS); // your SendGrid API key
 
+// ---------- TEST EMAIL (improved for debugging) ----------
 app.get("/test-email", async (req, res) => {
   const msg = {
     to: "sweetyparaman123@gmail.com",
@@ -161,14 +161,23 @@ app.get("/test-email", async (req, res) => {
 
   try {
     await sgMail.send(msg);
+    console.log("✅ Test email sent successfully");
     res.json({ success: true, message: "Test email sent" });
   } catch (err) {
-    console.error("SendGrid error:", err);
-    res.status(500).json({ error: err });
+    console.error("❌ SendGrid error:", err);
+
+    // Detailed error info
+    if (err.response && err.response.body) {
+      console.error("SendGrid response body:", err.response.body);
+    }
+
+    res.status(500).json({ 
+      message: "Failed to send email", 
+      error: err.message || err.toString(),
+      responseBody: err.response?.body || null
+    });
   }
 });
-
-
 
 // ----------------- FORGOT PASSWORD -----------------
 app.post("/forgot-password", (req, res) => {
@@ -186,10 +195,8 @@ app.post("/forgot-password", (req, res) => {
     console.log("User found:", user);
 
     if (!user) {
-      // Do not reveal if email exists
       return res.json({ message: "If an account exists with that email, a reset link will be sent" });
     }
-
 
     const resetToken = crypto.randomBytes(20).toString("hex");
     const resetTokenExpiry = Date.now() + 3600_000; // 1 hour
@@ -206,7 +213,7 @@ app.post("/forgot-password", (req, res) => {
         const resetLink = `${process.env.FRONTEND_URL}/reset-password/${resetToken}`;
         const msg = {
           to: email,
-          from: process.env.EMAIL_FROM, // must be verified in SendGrid
+          from: process.env.EMAIL_FROM,
           subject: "MeetPass - Password Reset",
           html: `<p>Click the link below to reset your password:</p><a href="${resetLink}">${resetLink}</a>`,
         };
@@ -223,8 +230,6 @@ app.post("/forgot-password", (req, res) => {
     );
   });
 });
-
-
 
 // Reset Password
 app.post("/reset-password/:token", async (req, res) => {
@@ -258,46 +263,30 @@ app.post("/reset-password/:token", async (req, res) => {
   );
 });
 
-// -------------- SCHEDULE MEETING (protected, improved) --------------
-app.post("/meetings", authenticateToken, (req, res) => {
+// -------------- SCHEDULE MEETING (protected) --------------
+pp.post("/meetings", authenticateToken, (req, res) => {
   try {
-    // Ensure req.user exists
     if (!req.user || !req.user.email) {
       return res.status(401).json({ message: "Unauthorized: invalid token" });
     }
 
-    console.log("Authenticated user:", req.user);
-
-    // Destructure request body
     const { scheduler, participantEmail, purpose, venue, startTime, endTime, isGroup, participants, token } = req.body;
-
     const schedulerEmail = scheduler || req.user.email;
 
-    // Validate required fields
     if (!schedulerEmail || !participantEmail || !purpose || !venue || !startTime || !endTime || !token) {
       return res.status(400).json({ message: "Missing required meeting fields" });
     }
 
-    // Validate time
     if (new Date(startTime) >= new Date(endTime)) {
       return res.status(400).json({ message: "Start time must be before end time" });
     }
 
-    // Check if token already exists
     db.get(`SELECT * FROM meetings WHERE token = ?`, [token], (err, existing) => {
-      if (err) {
-        console.error("DB error checking token:", err);
-        return res.status(500).json({ message: "Server error" });
-      }
-      if (existing) {
-        return res.status(409).json({ message: "Meeting token already exists." });
-      }
+      if (err) return res.status(500).json({ message: "Server error" });
+      if (existing) return res.status(409).json({ message: "Meeting token already exists." });
 
-      // Prepare participants
       const finalParticipants = Array.isArray(participants) ? [...new Set(participants)] : [];
-      const recipients = [...new Set([schedulerEmail, participantEmail, ...finalParticipants])];
 
-      // Insert meeting
       db.run(
         `INSERT INTO meetings (scheduler, participantEmail, purpose, venue, startTime, endTime, isGroup, participants, token, status)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -314,68 +303,46 @@ app.post("/meetings", authenticateToken, (req, res) => {
           req.user.role === "staff" ? "Approved" : "Pending"
         ],
         function (err) {
-          if (err) {
-            console.error("DB error inserting meeting:", err);
-            return res.status(500).json({ message: "Failed to schedule meeting" });
-          }
-
-          console.log("Meeting inserted with ID:", this.lastID);
+          if (err) return res.status(500).json({ message: "Failed to schedule meeting" });
           return res.status(201).json({ message: "Meeting scheduled successfully", meetingId: this.lastID });
         }
       );
     });
   } catch (err) {
-    console.error("Unexpected error in /meetings:", err);
     return res.status(500).json({ message: "Server error" });
   }
 });
 
-
 // -------------- GET MEETINGS (protected) --------------
-// -------------- GET MEETINGS (protected) --------------
-app.get("/meetings/:email", authenticateToken, (req, res) => {
-  const userEmail = req.params.email;
+app.get("/meetings", authenticateToken, (req, res) => {
+  const userEmail = req.user.email;
+  const isStaff = req.user.role === "staff";
 
-  // Only allow user to fetch their own meetings unless staff
-  if (req.user.email !== userEmail && req.user.role !== "staff") {
-    return res.status(403).json({ message: "Forbidden: cannot fetch other user's meetings" });
-  }
+  db.all(`SELECT * FROM meetings ORDER BY startTime ASC`, [], (err, rows) => {
+    if (err) return res.status(500).json({ message: "Failed to fetch meetings" });
 
-  // Fetch meetings where the user is scheduler, participantEmail, or in participants array
-  db.all(
-    `SELECT * FROM meetings 
-     WHERE scheduler = ? 
-        OR participantEmail = ? 
-        OR participants LIKE ? 
-     ORDER BY startTime ASC`,
-    [userEmail, userEmail, `%${userEmail}%`],
-    (err, rows) => {
-      if (err) {
-        console.error("DB error fetching meetings:", err);
-        return res.status(500).json({ message: "Failed to fetch meetings" });
-      }
+    const parsed = rows.map(r => {
+      try { r.participants = JSON.parse(r.participants || "[]"); } 
+      catch { r.participants = []; }
+      return r;
+    });
 
-      // Parse participants JSON for convenience
-      const parsed = rows.map((r) => {
-        try {
-          return { ...r, participants: JSON.parse(r.participants || "[]") };
-        } catch {
-          return { ...r, participants: [] };
-        }
-      });
+    const filtered = parsed.filter(m =>
+      isStaff || 
+      m.scheduler === userEmail || 
+      m.participantEmail === userEmail || 
+      (m.isGroup && m.participants.includes(userEmail))
+    );
 
-      res.json(parsed);
-    }
-  );
+    res.json(filtered);
+  });
 });
-
 
 // -------------- UPDATE MEETING STATUS (protected) --------------
 app.patch("/meetings/:id", authenticateToken, (req, res) => {
   const { id } = req.params;
   const { status, approvedBy } = req.body;
 
-  // Only staff or the approver can change status — here we allow staff to approve/reject
   if (req.user.role !== "staff") {
     return res.status(403).json({ message: "Only staff can update meeting status" });
   }
@@ -395,7 +362,6 @@ app.patch("/meetings/:id", authenticateToken, (req, res) => {
 });
 
 // -------------- DELETE USER (protected) --------------
-
 app.get("/debug-users", (req, res) => {
   db.all("SELECT * FROM users", [], (err, rows) => {
     if(err) return res.status(500).json({ message: err.message });
@@ -403,10 +369,8 @@ app.get("/debug-users", (req, res) => {
   });
 });
 
-
 // -------------- GET ALL USERS (protected) --------------
 app.get("/users", authenticateToken, (req, res) => {
-  // Only staff allowed to list all users
   if (req.user.role !== "staff") return res.status(403).json({ message: "Forbidden" });
 
   db.all("SELECT regno, name, email, role FROM users", [], (err, rows) => {
@@ -417,5 +381,6 @@ app.get("/users", authenticateToken, (req, res) => {
     res.json(rows);
   });
 });
+
 // ---------- Start server ----------
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
