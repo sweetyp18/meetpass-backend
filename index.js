@@ -171,22 +171,24 @@ app.get("/test-email", async (req, res) => {
 
 // ----------------- FORGOT PASSWORD -----------------
 app.post("/forgot-password", (req, res) => {
-  const { email } = req.body;
-  console.log("Forgot password requested for:", email);
-
+  let { email } = req.body;
   if (!email) return res.status(400).json({ message: "Email is required" });
 
-  db.get(`SELECT * FROM users WHERE email = ?`, [email], (err, user) => {
+  email = email.trim();
+
+  db.get(`SELECT * FROM users WHERE LOWER(email) = LOWER(?)`, [email], (err, user) => {
     if (err) {
       console.error("DB error:", err);
       return res.status(500).json({ message: "Server error" });
     }
+
     console.log("User found:", user);
 
     if (!user) {
       // Do not reveal if email exists
       return res.json({ message: "If an account exists with that email, a reset link will be sent" });
     }
+
 
     const resetToken = crypto.randomBytes(20).toString("hex");
     const resetTokenExpiry = Date.now() + 3600_000; // 1 hour
