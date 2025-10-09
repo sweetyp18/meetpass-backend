@@ -264,7 +264,7 @@ app.post("/reset-password/:token", async (req, res) => {
 });
 
 // -------------- SCHEDULE MEETING (protected) --------------
-pp.post("/meetings", authenticateToken, (req, res) => {
+app.post("/meetings", authenticateToken, (req, res) => {
   try {
     if (!req.user || !req.user.email) {
       return res.status(401).json({ message: "Unauthorized: invalid token" });
