@@ -379,7 +379,7 @@ app.patch("/meetings/:id", authenticateToken, (req, res) => {
 });
 
 // -------------- DELETE USER (protected) --------------
-a// Temporary debug endpoint to list all users
+
 app.get("/debug-users", (req, res) => {
   db.all("SELECT * FROM users", [], (err, rows) => {
     if(err) return res.status(500).json({ message: err.message });
