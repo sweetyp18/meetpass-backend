@@ -22,7 +22,7 @@ const db = new sqlite3.Database("./meetpass.db", (err) => {
   else console.log("✅ Connected to SQLite database");
 });
 
-// Create tables if not exist
+// 2️⃣ Create tables
 db.run(
   `CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -32,7 +32,8 @@ db.run(
     password TEXT,
     role TEXT DEFAULT 'student',
     resetToken TEXT,
-    resetTokenExpiry INTEGER
+    resetTokenExpiry INTEGER,
+    profileImage TEXT
   )`
 );
 
@@ -47,29 +48,34 @@ db.run(
     endTime TEXT,
     isGroup INTEGER,
     participants TEXT,
-    token TEXT,
+    token TEXT UNIQUE,
     status TEXT DEFAULT 'Pending',
     approvedBy TEXT
   )`
 );
-// Seed a test user (only if not exist)
-db.get(`SELECT * FROM users WHERE email = ?`, ["sweetyparaman123@gmail.com"], (err, user) => {
-  if (err) return console.error(err);
-  if (!user) {
-    const bcrypt = require("bcryptjs");
-    bcrypt.hash("Test@123", 10).then((hashedPassword) => {
+
+// 3️⃣ Insert default user (after db is ready)
+(async () => {
+  const email = "sweetyparaman123@gmail.com";
+  const regno = "242CSC37";
+
+  db.get("SELECT * FROM users WHERE email = ?", [email], async (err, user) => {
+    if (err) return console.error("DB Error checking default user:", err);
+    if (!user) {
+      const hashedPassword = await bcrypt.hash("Password123!", 10); // default password
       db.run(
         `INSERT INTO users (regno, name, email, password, role) VALUES (?, ?, ?, ?, ?)`,
-        ["242CSC37", "Sweety P", "sweetyparaman123@gmail.com", hashedPassword, "student"],
-        (err) => {
-          if (err) console.error("Error seeding user:", err);
-          else console.log("✅ Test user seeded into DB");
+        [regno, "Sweety P", email, hashedPassword, "student"],
+        function (err) {
+          if (err) console.error("Error inserting default user:", err);
+          else console.log("✅ Default user created for testing");
         }
       );
-    });
-  }
-});
-
+    } else {
+      console.log("✅ Default user already exists");
+    }
+  });
+})();
 
 // ---------- Email (nodemailer) ----------
 const transporter = nodemailer.createTransport({
