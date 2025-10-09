@@ -169,32 +169,32 @@ app.get("/test-email", (req, res) => {
 
 
 // ----------------- FORGOT PASSWORD -----------------
-app.post("/forgot-password", (req, res) => {
+aapp.post("/forgot-password", (req, res) => {
   const { email } = req.body;
-  console.log("Forgot password requested for:", email);  // ✅ log email
+  console.log("Forgot password requested for:", email);
 
   if (!email) return res.status(400).json({ message: "Email is required" });
 
   db.get(`SELECT * FROM users WHERE email = ?`, [email], (err, user) => {
     if (err) {
-      console.error("DB error:", err);  // ✅ log DB errors
+      console.error("DB error:", err);
       return res.status(500).json({ message: "Server error" });
     }
-    console.log("User found:", user); // ✅ log user
+    console.log("User found:", user);
 
     if (!user) {
       return res.json({ message: "If an account exists with that email, a reset link will be sent" });
     }
 
     const resetToken = crypto.randomBytes(20).toString("hex");
-    const resetTokenExpiry = Date.now() + 3600_000;
+    const resetTokenExpiry = Date.now() + 3600_000; // 1 hour
 
     db.run(
       `UPDATE users SET resetToken = ?, resetTokenExpiry = ? WHERE email = ?`,
       [resetToken, resetTokenExpiry, email],
       (updateErr) => {
         if (updateErr) {
-          console.error("Error saving reset token:", updateErr); // ✅ log
+          console.error("Error saving reset token:", updateErr);
           return res.status(500).json({ message: "Error saving reset token" });
         }
 
@@ -206,13 +206,13 @@ app.post("/forgot-password", (req, res) => {
           html: `<p>Click here to reset your password:</p><a href="${resetLink}">${resetLink}</a>`
         };
 
-        console.log("Sending email to:", email); // ✅ log before sending
+        console.log("Sending email to:", email);
         transporter.sendMail(mailOptions, (error, info) => {
           if (error) {
-            console.error("Failed to send email:", error); // ✅ log email errors
+            console.error("Failed to send email:", error);
             return res.status(500).json({ message: "Failed to send email" });
           }
-          console.log("Email sent:", info.response); // ✅ success log
+          console.log("Email sent:", info.response);
           res.json({ message: "If an account exists with that email, a reset link will be sent" });
         });
       }
@@ -225,6 +225,7 @@ app.post("/forgot-password", (req, res) => {
 app.post("/reset-password/:token", async (req, res) => {
   const { token } = req.params;
   const { newPassword } = req.body;
+
   if (!newPassword) return res.status(400).json({ message: "New password is required" });
 
   const now = Date.now();
@@ -254,37 +255,33 @@ app.post("/reset-password/:token", async (req, res) => {
 
 // -------------- SCHEDULE MEETING (protected, improved) --------------
 app.post("/meetings", authenticateToken, (req, res) => {
-  console.log("Meeting request body:", req.body); // ✅ log incoming request
-  console.log("Authenticated user:", req.user);   // ✅ log user from JWT
+  console.log("Meeting request body:", req.body);
+  console.log("Authenticated user:", req.user);
 
-  const {
-    scheduler, participantEmail, purpose, venue,
-    startTime, endTime, isGroup, participants, token
-  } = req.body;
-
+  const { scheduler, participantEmail, purpose, venue, startTime, endTime, isGroup, participants, token } = req.body;
   const schedulerEmail = scheduler || req.user.email;
 
   if (!schedulerEmail || !participantEmail || !purpose || !venue || !startTime || !endTime || !token) {
-    console.log("Missing required fields"); // ✅ log missing fields
+    console.log("Missing required fields");
     return res.status(400).json({ message: "Missing required meeting fields" });
   }
 
   if (new Date(startTime) >= new Date(endTime)) {
-    console.log("Invalid time range"); // ✅ log invalid times
+    console.log("Invalid time range");
     return res.status(400).json({ message: "Start time must be before end time" });
   }
 
   db.get(`SELECT * FROM meetings WHERE token = ?`, [token], (err, existing) => {
     if (err) {
-      console.error("DB error checking token:", err); // ✅ log DB error
+      console.error("DB error checking token:", err);
       return res.status(500).json({ message: "Server error" });
     }
     if (existing) {
-      console.log("Token already exists:", token); // ✅ log token conflict
+      console.log("Token already exists:", token);
       return res.status(409).json({ message: "Meeting token already exists." });
     }
 
-    console.log("Scheduling meeting for:", schedulerEmail, participantEmail); // ✅ log scheduling
+    console.log("Scheduling meeting for:", schedulerEmail, participantEmail);
 
     let finalParticipants = Array.isArray(participants) ? [...new Set(participants)] : [];
     let recipients = [schedulerEmail, participantEmail, ...finalParticipants];
@@ -307,11 +304,10 @@ app.post("/meetings", authenticateToken, (req, res) => {
       ],
       function (err) {
         if (err) {
-          console.error("DB error inserting meeting:", err); // ✅ log insert error
+          console.error("DB error inserting meeting:", err);
           return res.status(500).json({ message: "Failed to schedule meeting" });
         }
-
-        console.log("Meeting inserted with ID:", this.lastID); // ✅ log success
+        console.log("Meeting inserted with ID:", this.lastID);
         res.json({ message: "Meeting scheduled successfully", meetingId: this.lastID });
       }
     );
@@ -319,26 +315,31 @@ app.post("/meetings", authenticateToken, (req, res) => {
 });
 
 
-
+// -------------- GET MEETINGS (protected) --------------
 // -------------- GET MEETINGS (protected) --------------
 app.get("/meetings/:email", authenticateToken, (req, res) => {
   const userEmail = req.params.email;
 
-  // Only allow user to fetch their own meetings unless staff (staff can fetch others)
+  // Only allow user to fetch their own meetings unless staff
   if (req.user.email !== userEmail && req.user.role !== "staff") {
     return res.status(403).json({ message: "Forbidden: cannot fetch other user's meetings" });
   }
 
-  // participants is stored as JSON string; use LIKE to match email in that JSON string
+  // Fetch meetings where the user is scheduler, participantEmail, or in participants array
   db.all(
-    `SELECT * FROM meetings WHERE scheduler = ? OR participantEmail = ? OR participants LIKE ? ORDER BY startTime ASC`,
+    `SELECT * FROM meetings 
+     WHERE scheduler = ? 
+        OR participantEmail = ? 
+        OR participants LIKE ? 
+     ORDER BY startTime ASC`,
     [userEmail, userEmail, `%${userEmail}%`],
     (err, rows) => {
       if (err) {
         console.error("DB error fetching meetings:", err);
         return res.status(500).json({ message: "Failed to fetch meetings" });
       }
-      // Parse participants JSON for each row for convenience
+
+      // Parse participants JSON for convenience
       const parsed = rows.map((r) => {
         try {
           return { ...r, participants: JSON.parse(r.participants || "[]") };
@@ -346,10 +347,12 @@ app.get("/meetings/:email", authenticateToken, (req, res) => {
           return { ...r, participants: [] };
         }
       });
+
       res.json(parsed);
     }
   );
 });
+
 
 // -------------- UPDATE MEETING STATUS (protected) --------------
 app.patch("/meetings/:id", authenticateToken, (req, res) => {
