@@ -379,23 +379,14 @@ app.patch("/meetings/:id", authenticateToken, (req, res) => {
 });
 
 // -------------- DELETE USER (protected) --------------
-app.delete("/users/:regno", authenticateToken, (req, res) => {
-  const { regno } = req.params;
-
-  // Only staff can delete users; or allow user to delete own account
-  if (req.user.role !== "staff" && req.user.regno !== regno) {
-    return res.status(403).json({ message: "Forbidden: cannot delete this user" });
-  }
-
-  db.run(`DELETE FROM users WHERE regno = ?`, [regno], function (err) {
-    if (err) {
-      console.error("DB error deleting user:", err);
-      return res.status(500).json({ message: "Failed to delete user" });
-    }
-    if (this.changes === 0) return res.status(404).json({ message: "User not found" });
-    res.json({ message: "User deleted successfully" });
+app.delete("/debug-delete-user/:email", (req, res) => {
+  const email = req.params.email;
+  db.run(`DELETE FROM users WHERE email = ?`, [email], function(err) {
+    if(err) return res.status(500).json({ message: err.message });
+    res.json({ message: "User deleted", deleted: this.changes });
   });
 });
+
 
 // -------------- GET ALL USERS (protected) --------------
 app.get("/users", authenticateToken, (req, res) => {
