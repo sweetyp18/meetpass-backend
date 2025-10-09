@@ -169,7 +169,7 @@ app.get("/test-email", (req, res) => {
 
 
 // ----------------- FORGOT PASSWORD -----------------
-aapp.post("/forgot-password", (req, res) => {
+app.post("/forgot-password", (req, res) => {
   const { email } = req.body;
   console.log("Forgot password requested for:", email);
 
