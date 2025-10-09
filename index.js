@@ -19,7 +19,7 @@ app.use(cors({
 
 // ---------- Config ----------
 const PORT = process.env.PORT || 5000;
-const JWT_SECRET = process.env.JWT_SECRET || "please_change_this_secret";
+const JWT_SECRET = process.env.JWT_SECRET || "sweetysumanthdisneyigneshiya!";
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || "30d";
 
 // ---------- DB ----------
@@ -58,12 +58,19 @@ db.run(`CREATE TABLE IF NOT EXISTS meetings (
 
 // ---------- Email ----------
 const transporter = nodemailer.createTransport({
-  service: "SendGrid",
+  host: "smtp.sendgrid.net",
+  port: 587,
+  secure: false, // TLS
   auth: {
     user: "apikey",
     pass: process.env.EMAIL_PASS
+  },
+  tls: {
+    ciphers: "SSLv3"
   }
 });
+
+
 
 // ---------- Helpers ----------
 function signJwt(payload) {
