@@ -54,29 +54,6 @@ db.run(
   )`
 );
 
-// 3️⃣ Insert default user (after db is ready)
-(async () => {
-  const email = "sweetyparaman123@gmail.com";
-  const regno = "242CSC37";
-
-  db.get("SELECT * FROM users WHERE email = ?", [email], async (err, user) => {
-    if (err) return console.error("DB Error checking default user:", err);
-    if (!user) {
-      const hashedPassword = await bcrypt.hash("Password123!", 10); // default password
-      db.run(
-        `INSERT INTO users (regno, name, email, password, role) VALUES (?, ?, ?, ?, ?)`,
-        [regno, "Sweety P", email, hashedPassword, "student"],
-        function (err) {
-          if (err) console.error("Error inserting default user:", err);
-          else console.log("✅ Default user created for testing");
-        }
-      );
-    } else {
-      console.log("✅ Default user already exists");
-    }
-  });
-})();
-
 // ---------- Email (nodemailer) ----------
 const transporter = nodemailer.createTransport({
   service: "SendGrid",
