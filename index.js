@@ -2,7 +2,6 @@ require("dotenv").config();
 const express = require("express");
 const bcrypt = require("bcryptjs");
 const sqlite3 = require("sqlite3").verbose();
-const nodemailer = require("nodemailer");
 const crypto = require("crypto");
 const jwt = require("jsonwebtoken");
 const cors = require("cors");
@@ -55,22 +54,6 @@ db.run(`CREATE TABLE IF NOT EXISTS meetings (
   status TEXT DEFAULT 'Pending',
   approvedBy TEXT
 )`);
-
-// ---------- Email ----------
-const transporter = nodemailer.createTransport({
-  host: "smtp.sendgrid.net",
-  port: 587,
-  secure: false, // TLS
-  auth: {
-    user: "apikey",
-    pass: process.env.EMAIL_PASS
-  },
-  tls: {
-    ciphers: "SSLv3"
-  }
-});
-
-
 
 // ---------- Helpers ----------
 function signJwt(payload) {
@@ -162,17 +145,28 @@ app.post("/login-regno", (req, res) => {
     });
   });
 });
-app.get("/test-email", (req, res) => {
-  transporter.sendMail({
-    from: process.env.EMAIL_FROM,
+
+
+const sgMail = require("@sendgrid/mail");
+sgMail.setApiKey(process.env.EMAIL_PASS); // your SendGrid API key
+
+app.get("/test-email", async (req, res) => {
+  const msg = {
     to: "sweetyparaman123@gmail.com",
-    subject: "Test Email",
-    html: "<p>Hello! This is a test from MeetPass.</p>"
-  }, (err, info) => {
-    if(err) return res.status(500).json({ error: err });
-    res.json({ success: true, info });
-  });
+    from: process.env.EMAIL_FROM, // must be verified in SendGrid
+    subject: "Test Email from MeetPass",
+    html: "<p>Hello! This is a test email from MeetPass using SendGrid.</p>",
+  };
+
+  try {
+    await sgMail.send(msg);
+    res.json({ success: true, message: "Test email sent" });
+  } catch (err) {
+    console.error("SendGrid error:", err);
+    res.status(500).json({ error: err });
+  }
 });
+
 
 
 // ----------------- FORGOT PASSWORD -----------------
@@ -190,6 +184,7 @@ app.post("/forgot-password", (req, res) => {
     console.log("User found:", user);
 
     if (!user) {
+      // Do not reveal if email exists
       return res.json({ message: "If an account exists with that email, a reset link will be sent" });
     }
 
@@ -199,33 +194,33 @@ app.post("/forgot-password", (req, res) => {
     db.run(
       `UPDATE users SET resetToken = ?, resetTokenExpiry = ? WHERE email = ?`,
       [resetToken, resetTokenExpiry, email],
-      (updateErr) => {
+      async (updateErr) => {
         if (updateErr) {
           console.error("Error saving reset token:", updateErr);
           return res.status(500).json({ message: "Error saving reset token" });
         }
 
         const resetLink = `${process.env.FRONTEND_URL}/reset-password/${resetToken}`;
-        const mailOptions = {
-          from: process.env.EMAIL_FROM,
+        const msg = {
           to: email,
+          from: process.env.EMAIL_FROM, // must be verified in SendGrid
           subject: "MeetPass - Password Reset",
-          html: `<p>Click here to reset your password:</p><a href="${resetLink}">${resetLink}</a>`
+          html: `<p>Click the link below to reset your password:</p><a href="${resetLink}">${resetLink}</a>`,
         };
 
-        console.log("Sending email to:", email);
-        transporter.sendMail(mailOptions, (error, info) => {
-          if (error) {
-            console.error("Failed to send email:", error);
-            return res.status(500).json({ message: "Failed to send email" });
-          }
-          console.log("Email sent:", info.response);
+        try {
+          await sgMail.send(msg);
+          console.log("Password reset email sent to:", email);
           res.json({ message: "If an account exists with that email, a reset link will be sent" });
-        });
+        } catch (sendErr) {
+          console.error("SendGrid API error:", sendErr);
+          res.status(500).json({ message: "Failed to send email" });
+        }
       }
     );
   });
 });
+
 
 
 // Reset Password
@@ -262,63 +257,74 @@ app.post("/reset-password/:token", async (req, res) => {
 
 // -------------- SCHEDULE MEETING (protected, improved) --------------
 app.post("/meetings", authenticateToken, (req, res) => {
-  console.log("Meeting request body:", req.body);
-  console.log("Authenticated user:", req.user);
-
-  const { scheduler, participantEmail, purpose, venue, startTime, endTime, isGroup, participants, token } = req.body;
-  const schedulerEmail = scheduler || req.user.email;
-
-  if (!schedulerEmail || !participantEmail || !purpose || !venue || !startTime || !endTime || !token) {
-    console.log("Missing required fields");
-    return res.status(400).json({ message: "Missing required meeting fields" });
-  }
-
-  if (new Date(startTime) >= new Date(endTime)) {
-    console.log("Invalid time range");
-    return res.status(400).json({ message: "Start time must be before end time" });
-  }
-
-  db.get(`SELECT * FROM meetings WHERE token = ?`, [token], (err, existing) => {
-    if (err) {
-      console.error("DB error checking token:", err);
-      return res.status(500).json({ message: "Server error" });
-    }
-    if (existing) {
-      console.log("Token already exists:", token);
-      return res.status(409).json({ message: "Meeting token already exists." });
+  try {
+    // Ensure req.user exists
+    if (!req.user || !req.user.email) {
+      return res.status(401).json({ message: "Unauthorized: invalid token" });
     }
 
-    console.log("Scheduling meeting for:", schedulerEmail, participantEmail);
+    console.log("Authenticated user:", req.user);
 
-    let finalParticipants = Array.isArray(participants) ? [...new Set(participants)] : [];
-    let recipients = [schedulerEmail, participantEmail, ...finalParticipants];
-    recipients = [...new Set(recipients)];
+    // Destructure request body
+    const { scheduler, participantEmail, purpose, venue, startTime, endTime, isGroup, participants, token } = req.body;
 
-    db.run(
-      `INSERT INTO meetings (scheduler, participantEmail, purpose, venue, startTime, endTime, isGroup, participants, token, status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        schedulerEmail,
-        participantEmail,
-        purpose,
-        venue,
-        startTime,
-        endTime,
-        isGroup ? 1 : 0,
-        JSON.stringify(finalParticipants),
-        token,
-        req.user.role === "staff" ? "Approved" : "Pending",
-      ],
-      function (err) {
-        if (err) {
-          console.error("DB error inserting meeting:", err);
-          return res.status(500).json({ message: "Failed to schedule meeting" });
-        }
-        console.log("Meeting inserted with ID:", this.lastID);
-        res.json({ message: "Meeting scheduled successfully", meetingId: this.lastID });
+    const schedulerEmail = scheduler || req.user.email;
+
+    // Validate required fields
+    if (!schedulerEmail || !participantEmail || !purpose || !venue || !startTime || !endTime || !token) {
+      return res.status(400).json({ message: "Missing required meeting fields" });
+    }
+
+    // Validate time
+    if (new Date(startTime) >= new Date(endTime)) {
+      return res.status(400).json({ message: "Start time must be before end time" });
+    }
+
+    // Check if token already exists
+    db.get(`SELECT * FROM meetings WHERE token = ?`, [token], (err, existing) => {
+      if (err) {
+        console.error("DB error checking token:", err);
+        return res.status(500).json({ message: "Server error" });
       }
-    );
-  });
+      if (existing) {
+        return res.status(409).json({ message: "Meeting token already exists." });
+      }
+
+      // Prepare participants
+      const finalParticipants = Array.isArray(participants) ? [...new Set(participants)] : [];
+      const recipients = [...new Set([schedulerEmail, participantEmail, ...finalParticipants])];
+
+      // Insert meeting
+      db.run(
+        `INSERT INTO meetings (scheduler, participantEmail, purpose, venue, startTime, endTime, isGroup, participants, token, status)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          schedulerEmail,
+          participantEmail,
+          purpose,
+          venue,
+          startTime,
+          endTime,
+          isGroup ? 1 : 0,
+          JSON.stringify(finalParticipants),
+          token,
+          req.user.role === "staff" ? "Approved" : "Pending"
+        ],
+        function (err) {
+          if (err) {
+            console.error("DB error inserting meeting:", err);
+            return res.status(500).json({ message: "Failed to schedule meeting" });
+          }
+
+          console.log("Meeting inserted with ID:", this.lastID);
+          return res.status(201).json({ message: "Meeting scheduled successfully", meetingId: this.lastID });
+        }
+      );
+    });
+  } catch (err) {
+    console.error("Unexpected error in /meetings:", err);
+    return res.status(500).json({ message: "Server error" });
+  }
 });
 
 
@@ -408,6 +414,5 @@ app.get("/users", authenticateToken, (req, res) => {
     res.json(rows);
   });
 });
-
 // ---------- Start server ----------
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
