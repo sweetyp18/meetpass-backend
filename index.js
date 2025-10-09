@@ -8,13 +8,19 @@ const jwt = require("jsonwebtoken");
 const cors = require("cors");
 
 const app = express();
+
+// ---------- Middleware ----------
 app.use(express.json());
-app.use(cors()); // Allow requests from front-end. Configure origin in production.
+app.use(cors({
+  origin: "http://localhost:3000",
+  methods: ["GET", "POST", "PATCH", "DELETE"],
+  credentials: true
+}));
 
 // ---------- Config ----------
 const PORT = process.env.PORT || 5000;
 const JWT_SECRET = process.env.JWT_SECRET || "please_change_this_secret";
-const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || "30d"; // token lifetime
+const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || "30d";
 
 // ---------- DB ----------
 const db = new sqlite3.Database("./meetpass.db", (err) => {
@@ -22,47 +28,42 @@ const db = new sqlite3.Database("./meetpass.db", (err) => {
   else console.log("✅ Connected to SQLite database");
 });
 
-// 2️⃣ Create tables
-db.run(
-  `CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    regno TEXT UNIQUE,
-    name TEXT,
-    email TEXT UNIQUE,
-    password TEXT,
-    role TEXT DEFAULT 'student',
-    resetToken TEXT,
-    resetTokenExpiry INTEGER,
-    profileImage TEXT
-  )`
-);
+// Create tables (if not exists)
+db.run(`CREATE TABLE IF NOT EXISTS users (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  regno TEXT UNIQUE,
+  name TEXT,
+  email TEXT UNIQUE,
+  password TEXT,
+  role TEXT DEFAULT 'student',
+  resetToken TEXT,
+  resetTokenExpiry INTEGER,
+  profileImage TEXT
+)`);
 
-db.run(
-  `CREATE TABLE IF NOT EXISTS meetings (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    scheduler TEXT,
-    participantEmail TEXT,
-    purpose TEXT,
-    venue TEXT,
-    startTime TEXT,
-    endTime TEXT,
-    isGroup INTEGER,
-    participants TEXT,
-    token TEXT UNIQUE,
-    status TEXT DEFAULT 'Pending',
-    approvedBy TEXT
-  )`
-);
+db.run(`CREATE TABLE IF NOT EXISTS meetings (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  scheduler TEXT,
+  participantEmail TEXT,
+  purpose TEXT,
+  venue TEXT,
+  startTime TEXT,
+  endTime TEXT,
+  isGroup INTEGER,
+  participants TEXT,
+  token TEXT UNIQUE,
+  status TEXT DEFAULT 'Pending',
+  approvedBy TEXT
+)`);
 
-// ---------- Email (nodemailer) ----------
+// ---------- Email ----------
 const transporter = nodemailer.createTransport({
   service: "SendGrid",
   auth: {
-    user: "apikey",              // literal string
-    pass: process.env.EMAIL_PASS // SendGrid API key
+    user: "apikey",
+    pass: process.env.EMAIL_PASS
   }
 });
-
 
 // ---------- Helpers ----------
 function signJwt(payload) {
@@ -73,23 +74,22 @@ function hashToken(token) {
   return crypto.createHash("sha256").update(token).digest("hex");
 }
 
-// Middleware to protect endpoints
+// ---------- JWT Middleware ----------
 function authenticateToken(req, res, next) {
-  const authHeader = req.headers["authorization"] || req.headers["Authorization"];
+  const authHeader = req.headers["authorization"];
   if (!authHeader) return res.status(401).json({ message: "Missing authorization header" });
-  const parts = authHeader.split(" ");
-  if (parts.length !== 2 || parts[0] !== "Bearer") return res.status(401).json({ message: "Invalid authorization format" });
-  const token = parts[1];
+
+  const [type, token] = authHeader.split(" ");
+  if (type !== "Bearer" || !token) return res.status(401).json({ message: "Invalid authorization format" });
+
   jwt.verify(token, JWT_SECRET, (err, payload) => {
     if (err) return res.status(403).json({ message: "Invalid or expired token" });
-    req.user = payload; // payload includes regno, email, name, role
+    req.user = payload;
     next();
   });
 }
 
-// ---------- Routes ----------
-
-// Health
+// Health check
 app.get("/", (req, res) => res.send("MeetPass running successfully"));
 
 // -------------- SIGNUP --------------
@@ -409,6 +409,4 @@ app.get("/users", authenticateToken, (req, res) => {
 });
 
 // ---------- Start server ----------
-app.listen(PORT, () => {
-  console.log(`🚀 MeetPass backend running on http://localhost:${PORT} (PORT=${PORT})`);
-});
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
