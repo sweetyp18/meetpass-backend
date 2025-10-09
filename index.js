@@ -379,11 +379,11 @@ app.patch("/meetings/:id", authenticateToken, (req, res) => {
 });
 
 // -------------- DELETE USER (protected) --------------
-app.delete("/debug-delete-user/:email", (req, res) => {
-  const email = req.params.email;
-  db.run(`DELETE FROM users WHERE email = ?`, [email], function(err) {
+a// Temporary debug endpoint to list all users
+app.get("/debug-users", (req, res) => {
+  db.all("SELECT * FROM users", [], (err, rows) => {
     if(err) return res.status(500).json({ message: err.message });
-    res.json({ message: "User deleted", deleted: this.changes });
+    res.json(rows);
   });
 });
 
