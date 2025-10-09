@@ -157,23 +157,32 @@ app.post("/login-regno", (req, res) => {
 // ----------------- FORGOT PASSWORD -----------------
 app.post("/forgot-password", (req, res) => {
   const { email } = req.body;
+  console.log("Forgot password requested for:", email);  // ✅ log email
+
   if (!email) return res.status(400).json({ message: "Email is required" });
 
   db.get(`SELECT * FROM users WHERE email = ?`, [email], (err, user) => {
-    if (err) return res.status(500).json({ message: "Server error" });
+    if (err) {
+      console.error("DB error:", err);  // ✅ log DB errors
+      return res.status(500).json({ message: "Server error" });
+    }
+    console.log("User found:", user); // ✅ log user
+
     if (!user) {
-      // Always send generic message
       return res.json({ message: "If an account exists with that email, a reset link will be sent" });
     }
 
-    const resetToken = crypto.randomBytes(20).toString("hex"); // plain token
-    const resetTokenExpiry = Date.now() + 3600_000; // 1 hour expiry
+    const resetToken = crypto.randomBytes(20).toString("hex");
+    const resetTokenExpiry = Date.now() + 3600_000;
 
     db.run(
       `UPDATE users SET resetToken = ?, resetTokenExpiry = ? WHERE email = ?`,
       [resetToken, resetTokenExpiry, email],
       (updateErr) => {
-        if (updateErr) return res.status(500).json({ message: "Error saving reset token" });
+        if (updateErr) {
+          console.error("Error saving reset token:", updateErr); // ✅ log
+          return res.status(500).json({ message: "Error saving reset token" });
+        }
 
         const resetLink = `${process.env.FRONTEND_URL}/reset-password/${resetToken}`;
         const mailOptions = {
@@ -183,14 +192,20 @@ app.post("/forgot-password", (req, res) => {
           html: `<p>Click here to reset your password:</p><a href="${resetLink}">${resetLink}</a>`
         };
 
-        transporter.sendMail(mailOptions, (error) => {
-          if (error) return res.status(500).json({ message: "Failed to send email" });
+        console.log("Sending email to:", email); // ✅ log before sending
+        transporter.sendMail(mailOptions, (error, info) => {
+          if (error) {
+            console.error("Failed to send email:", error); // ✅ log email errors
+            return res.status(500).json({ message: "Failed to send email" });
+          }
+          console.log("Email sent:", info.response); // ✅ success log
           res.json({ message: "If an account exists with that email, a reset link will be sent" });
         });
       }
     );
   });
 });
+
 
 // Reset Password
 app.post("/reset-password/:token", async (req, res) => {
@@ -225,50 +240,45 @@ app.post("/reset-password/:token", async (req, res) => {
 
 // -------------- SCHEDULE MEETING (protected, improved) --------------
 app.post("/meetings", authenticateToken, (req, res) => {
+  console.log("Meeting request body:", req.body); // ✅ log incoming request
+  console.log("Authenticated user:", req.user);   // ✅ log user from JWT
+
   const {
-    scheduler, // optional: can rely on req.user.email if not provided
-    participantEmail,
-    purpose,
-    venue,
-    startTime,
-    endTime,
-    isGroup,
-    participants,
-    token,
-    status,
+    scheduler, participantEmail, purpose, venue,
+    startTime, endTime, isGroup, participants, token
   } = req.body;
 
   const schedulerEmail = scheduler || req.user.email;
 
-  // Basic validation
   if (!schedulerEmail || !participantEmail || !purpose || !venue || !startTime || !endTime || !token) {
+    console.log("Missing required fields"); // ✅ log missing fields
     return res.status(400).json({ message: "Missing required meeting fields" });
   }
 
-  // Validate startTime < endTime
   if (new Date(startTime) >= new Date(endTime)) {
+    console.log("Invalid time range"); // ✅ log invalid times
     return res.status(400).json({ message: "Start time must be before end time" });
   }
 
-  // Check for token uniqueness
   db.get(`SELECT * FROM meetings WHERE token = ?`, [token], (err, existing) => {
     if (err) {
-      console.error("DB error checking token:", err);
+      console.error("DB error checking token:", err); // ✅ log DB error
       return res.status(500).json({ message: "Server error" });
     }
     if (existing) {
-      return res.status(409).json({ message: "Meeting token already exists. Please generate a new one." });
+      console.log("Token already exists:", token); // ✅ log token conflict
+      return res.status(409).json({ message: "Meeting token already exists." });
     }
 
-    // Deduplicate participants array
+    console.log("Scheduling meeting for:", schedulerEmail, participantEmail); // ✅ log scheduling
+
     let finalParticipants = Array.isArray(participants) ? [...new Set(participants)] : [];
     let recipients = [schedulerEmail, participantEmail, ...finalParticipants];
-    recipients = [...new Set(recipients)]; // remove duplicates
+    recipients = [...new Set(recipients)];
 
     db.run(
-      `INSERT INTO meetings 
-      (scheduler, participantEmail, purpose, venue, startTime, endTime, isGroup, participants, token, status)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO meetings (scheduler, participantEmail, purpose, venue, startTime, endTime, isGroup, participants, token, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         schedulerEmail,
         participantEmail,
@@ -279,44 +289,21 @@ app.post("/meetings", authenticateToken, (req, res) => {
         isGroup ? 1 : 0,
         JSON.stringify(finalParticipants),
         token,
-        status || (req.user.role === "staff" ? "Approved" : "Pending"),
+        req.user.role === "staff" ? "Approved" : "Pending",
       ],
       function (err) {
         if (err) {
-          console.error("DB error inserting meeting:", err);
+          console.error("DB error inserting meeting:", err); // ✅ log insert error
           return res.status(500).json({ message: "Failed to schedule meeting" });
         }
 
-        const mailOptions = {
-          from: process.env.EMAIL_USER,
-          to: recipients,
-          subject: `Meeting Scheduled: ${token}`,
-          text: `
-Hello,
-
-A meeting has been scheduled.
-
-Scheduler: ${schedulerEmail}
-Participant(s): ${isGroup && finalParticipants.length > 0 ? finalParticipants.join(", ") : participantEmail}
-Purpose: ${purpose}
-Venue: ${venue}
-Start Time: ${startTime}
-End Time: ${endTime}
-Token: ${token}
-
-Thank you,
-MeetPass
-          `,
-        };
-        transporter.sendMail(mailOptions, (emailErr) => {
-          if (emailErr) console.error("Failed to send meeting email:", emailErr);
-        });
-
+        console.log("Meeting inserted with ID:", this.lastID); // ✅ log success
         res.json({ message: "Meeting scheduled successfully", meetingId: this.lastID });
       }
     );
   });
 });
+
 
 
 // -------------- GET MEETINGS (protected) --------------
