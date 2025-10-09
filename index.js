@@ -52,6 +52,24 @@ db.run(
     approvedBy TEXT
   )`
 );
+// Seed a test user (only if not exist)
+db.get(`SELECT * FROM users WHERE email = ?`, ["sweetyparaman123@gmail.com"], (err, user) => {
+  if (err) return console.error(err);
+  if (!user) {
+    const bcrypt = require("bcryptjs");
+    bcrypt.hash("Test@123", 10).then((hashedPassword) => {
+      db.run(
+        `INSERT INTO users (regno, name, email, password, role) VALUES (?, ?, ?, ?, ?)`,
+        ["242CSC37", "Sweety P", "sweetyparaman123@gmail.com", hashedPassword, "student"],
+        (err) => {
+          if (err) console.error("Error seeding user:", err);
+          else console.log("✅ Test user seeded into DB");
+        }
+      );
+    });
+  }
+});
+
 
 // ---------- Email (nodemailer) ----------
 const transporter = nodemailer.createTransport({
