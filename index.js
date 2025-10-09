@@ -57,9 +57,9 @@ db.run(
 const transporter = nodemailer.createTransport({
   service: "SendGrid",
   auth: {
-    user: process.env.EMAIL_USER, // should be "apikey"
-    pass: process.env.EMAIL_PASS, // your SendGrid API key
-  },
+    user: "apikey",              // literal string
+    pass: process.env.EMAIL_PASS // SendGrid API key
+  }
 });
 
 
@@ -154,6 +154,18 @@ app.post("/login-regno", (req, res) => {
     });
   });
 });
+app.get("/test-email", (req, res) => {
+  transporter.sendMail({
+    from: process.env.EMAIL_FROM,
+    to: "sweetyparaman123@gmail.com",
+    subject: "Test Email",
+    html: "<p>Hello! This is a test from MeetPass.</p>"
+  }, (err, info) => {
+    if(err) return res.status(500).json({ error: err });
+    res.json({ success: true, info });
+  });
+});
+
 
 // ----------------- FORGOT PASSWORD -----------------
 app.post("/forgot-password", (req, res) => {
