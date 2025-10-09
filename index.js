@@ -55,12 +55,13 @@ db.run(
 
 // ---------- Email (nodemailer) ----------
 const transporter = nodemailer.createTransport({
-  service: "gmail",
+  service: "SendGrid",
   auth: {
-    user: process.env.EMAIL_USER, // your gmail
-    pass: process.env.EMAIL_PASS, // 16-char app password
+    user: process.env.EMAIL_USER, // should be "apikey"
+    pass: process.env.EMAIL_PASS, // your SendGrid API key
   },
 });
+
 
 // ---------- Helpers ----------
 function signJwt(payload) {
