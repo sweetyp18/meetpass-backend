@@ -148,7 +148,7 @@ app.post("/login-regno", (req, res) => {
 });
 
 const sgMail = require("@sendgrid/mail");
-sgMail.setApiKey(process.env.EMAIL_PASS); // your SendGrid API key
+sgMail.setApiKey(process.env.SENDGRID_API_KEY); // your SendGrid API key
 
 // ---------- TEST EMAIL (improved for debugging) ----------
 app.get("/test-email", async (req, res) => {
@@ -270,14 +270,19 @@ app.post("/meetings", authenticateToken, (req, res) => {
       return res.status(401).json({ message: "Unauthorized: invalid token" });
     }
 
-    const { scheduler, participantEmail, purpose, venue, startTime, endTime, isGroup, participants, token } = req.body;
+    const { scheduler, participantEmail, purpose, venue, date, startTime, endTime, isGroup, participants, token } = req.body;
     const schedulerEmail = scheduler || req.user.email;
 
-    if (!schedulerEmail || !participantEmail || !purpose || !venue || !startTime || !endTime || !token) {
+    // Validate required fields including date
+    if (!schedulerEmail || !participantEmail || !purpose || !venue || !date || !startTime || !endTime || !token) {
       return res.status(400).json({ message: "Missing required meeting fields" });
     }
 
-    if (new Date(startTime) >= new Date(endTime)) {
+    // Validate start time is before end time using date + time
+    const startDateTime = new Date(`${date}T${startTime}`);
+    const endDateTime = new Date(`${date}T${endTime}`);
+
+    if (startDateTime >= endDateTime) {
       return res.status(400).json({ message: "Start time must be before end time" });
     }
 
@@ -288,13 +293,14 @@ app.post("/meetings", authenticateToken, (req, res) => {
       const finalParticipants = Array.isArray(participants) ? [...new Set(participants)] : [];
 
       db.run(
-        `INSERT INTO meetings (scheduler, participantEmail, purpose, venue, startTime, endTime, isGroup, participants, token, status)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO meetings (scheduler, participantEmail, purpose, venue, date, startTime, endTime, isGroup, participants, token, status)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           schedulerEmail,
           participantEmail,
           purpose,
           venue,
+          date,
           startTime,
           endTime,
           isGroup ? 1 : 0,
@@ -312,6 +318,7 @@ app.post("/meetings", authenticateToken, (req, res) => {
     return res.status(500).json({ message: "Server error" });
   }
 });
+
 
 // -------------- GET MEETINGS (protected) --------------
 app.get("/meetings", authenticateToken, (req, res) => {
