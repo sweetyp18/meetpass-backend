@@ -49,6 +49,7 @@ db.run(`CREATE TABLE IF NOT EXISTS meetings (
   participantEmail TEXT,
   purpose TEXT,
   venue TEXT,
+  date TEXT,
   startTime TEXT,
   endTime TEXT,
   isGroup INTEGER,
@@ -294,22 +295,25 @@ app.post("/meetings", authenticateToken, (req, res) => {
 
       const finalParticipants = Array.isArray(participants) ? [...new Set(participants)] : [];
 
-      db.run(
-        `INSERT INTO meetings (scheduler, participantEmail, purpose, venue, date, startTime, endTime, isGroup, participants, token, status)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          schedulerEmail,
-          participantEmail,
-          purpose,
-          venue,
-          date,
-          startTime,
-          endTime,
-          isGroup ? 1 : 0,
-          JSON.stringify(finalParticipants),
-          token,
-          req.user.role === "staff" ? "Approved" : "Pending"
-        ],
+     db.run(
+  `INSERT INTO meetings (
+    scheduler, participantEmail, purpose, venue, date, startTime, endTime, isGroup, participants, token, status, approvedBy
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  [
+    schedulerEmail,
+    participantEmail,
+    purpose,
+    venue,
+    date,
+    startTime,
+    endTime,
+    isGroup ? 1 : 0,
+    JSON.stringify(finalParticipants),
+    token,
+    req.user.role === "staff" ? "Approved" : "Pending",
+    null // or staff email if staff is scheduling
+  ],
+
         function (err) {
           if (err) return res.status(500).json({ message: "Failed to schedule meeting" });
           return res.status(201).json({ message: "Meeting scheduled successfully", meetingId: this.lastID });
