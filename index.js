@@ -5,7 +5,7 @@ const sqlite3 = require("sqlite3").verbose();
 const crypto = require("crypto");
 const jwt = require("jsonwebtoken");
 const cors = require("cors");
-const path = require("path"); 
+const path = require("path"); // Ensure path is imported
 const app = express();
 
 // ---------- Middleware ----------
@@ -31,8 +31,7 @@ const db = new sqlite3.Database(dbPath, (err) => {
   else console.log("✅ Connected to SQLite database");
 });
 
-
-// Create tables (if not exists)
+// Create tables if not exists
 db.run(`CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   regno TEXT UNIQUE,
@@ -116,17 +115,14 @@ app.post("/signup", async (req, res) => {
   }
 });
 
-// -------------- LOGIN (returns JWT) --------------
+// -------------- LOGIN --------------
 app.post("/login-regno", (req, res) => {
   const { regno, password } = req.body;
   if (!regno || !password) {
     return res.status(400).json({ message: "Please enter RegNo and password" });
   }
   db.get(`SELECT * FROM users WHERE regno = ?`, [regno], async (err, user) => {
-    if (err) {
-      console.error("DB error /login-regno:", err);
-      return res.status(500).json({ message: "Server error" });
-    }
+    if (err) return res.status(500).json({ message: "Server error" });
     if (!user) return res.status(400).json({ message: "Invalid RegNo or password" });
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) return res.status(400).json({ message: "Invalid RegNo or password" });
@@ -152,181 +148,53 @@ app.post("/login-regno", (req, res) => {
   });
 });
 
-const sgMail = require("@sendgrid/mail");
-sgMail.setApiKey(process.env.SENDGRID_API_KEY); // your SendGrid API key
+// ----------------- SCHEDULE MEETING (protected) -----------------
+app.post("/meetings", authenticateToken, (req, res) => {
+  console.log("Request body:", req.body); // debug
 
-// ---------- TEST EMAIL (improved for debugging) ----------
-app.get("/test-email", async (req, res) => {
-  const msg = {
-    to: "sweetyparaman123@gmail.com",
-    from: process.env.EMAIL_FROM, // must be verified in SendGrid
-    subject: "Test Email from MeetPass",
-    html: "<p>Hello! This is a test email from MeetPass using SendGrid.</p>",
-  };
+  const { scheduler, participantEmail, purpose, venue, date, startTime, endTime, isGroup, participants, token } = req.body;
+  const schedulerEmail = scheduler || req.user.email;
 
-  try {
-    await sgMail.send(msg);
-    console.log("✅ Test email sent successfully");
-    res.json({ success: true, message: "Test email sent" });
-  } catch (err) {
-    console.error("❌ SendGrid error:", err);
-
-    // Detailed error info
-    if (err.response && err.response.body) {
-      console.error("SendGrid response body:", err.response.body);
-    }
-
-    res.status(500).json({ 
-      message: "Failed to send email", 
-      error: err.message || err.toString(),
-      responseBody: err.response?.body || null
-    });
+  if (!schedulerEmail || !participantEmail || !purpose || !venue || !date || !startTime || !endTime || !token) {
+    return res.status(400).json({ message: "Missing required meeting fields" });
   }
-});
 
-// ----------------- FORGOT PASSWORD -----------------
-app.post("/forgot-password", (req, res) => {
-  let { email } = req.body;
-  if (!email) return res.status(400).json({ message: "Email is required" });
+  const startDateTime = new Date(`${date}T${startTime}`);
+  const endDateTime = new Date(`${date}T${endTime}`);
 
-  email = email.trim();
+  if (startDateTime >= endDateTime) {
+    return res.status(400).json({ message: "Start time must be before end time" });
+  }
 
-  db.get(`SELECT * FROM users WHERE LOWER(email) = LOWER(?)`, [email], (err, user) => {
-    if (err) {
-      console.error("DB error:", err);
-      return res.status(500).json({ message: "Server error" });
-    }
+  const finalParticipants = Array.isArray(participants) ? [...new Set(participants)] : [];
 
-    console.log("User found:", user);
-
-    if (!user) {
-      return res.json({ message: "If an account exists with that email, a reset link will be sent" });
-    }
-
-    const resetToken = crypto.randomBytes(20).toString("hex");
-    const resetTokenExpiry = Date.now() + 3600_000; // 1 hour
-
-    db.run(
-      `UPDATE users SET resetToken = ?, resetTokenExpiry = ? WHERE email = ?`,
-      [resetToken, resetTokenExpiry, email],
-      async (updateErr) => {
-        if (updateErr) {
-          console.error("Error saving reset token:", updateErr);
-          return res.status(500).json({ message: "Error saving reset token" });
-        }
-
-        const resetLink = `${process.env.FRONTEND_URL}/reset-password/${resetToken}`;
-        const msg = {
-          to: email,
-          from: process.env.EMAIL_FROM,
-          subject: "MeetPass - Password Reset",
-          html: `<p>Click the link below to reset your password:</p><a href="${resetLink}">${resetLink}</a>`,
-        };
-
-        try {
-          await sgMail.send(msg);
-          console.log("Password reset email sent to:", email);
-          res.json({ message: "If an account exists with that email, a reset link will be sent" });
-        } catch (sendErr) {
-          console.error("SendGrid API error:", sendErr);
-          res.status(500).json({ message: "Failed to send email" });
-        }
+  db.run(
+    `INSERT INTO meetings (
+      scheduler, participantEmail, purpose, venue, date, startTime, endTime, isGroup, participants, token, status, approvedBy
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      schedulerEmail,
+      participantEmail,
+      purpose,
+      venue,
+      date,
+      startTime,
+      endTime,
+      isGroup ? 1 : 0,
+      JSON.stringify(finalParticipants),
+      token,
+      req.user.role === "staff" ? "Approved" : "Pending",
+      null
+    ],
+    function(err) {
+      if (err) {
+        console.error("SQLite insert error:", err);
+        return res.status(500).json({ message: "Failed to schedule meeting", error: err.message });
       }
-    );
-  });
-});
-
-// Reset Password
-app.post("/reset-password/:token", async (req, res) => {
-  const { token } = req.params;
-  const { newPassword } = req.body;
-
-  if (!newPassword) return res.status(400).json({ message: "New password is required" });
-
-  const now = Date.now();
-  db.get(
-    `SELECT * FROM users WHERE resetToken = ? AND resetTokenExpiry > ?`,
-    [token, now],
-    async (err, user) => {
-      if (err) return res.status(500).json({ message: "Server error" });
-      if (!user) return res.status(400).json({ message: "Invalid or expired reset link" });
-
-      try {
-        const hashedPassword = await bcrypt.hash(newPassword, 10);
-        db.run(
-          `UPDATE users SET password = ?, resetToken = NULL, resetTokenExpiry = NULL WHERE id = ?`,
-          [hashedPassword, user.id],
-          (updateErr) => {
-            if (updateErr) return res.status(500).json({ message: "Error resetting password" });
-            res.json({ message: "Password reset successfully" });
-          }
-        );
-      } catch (hashErr) {
-        res.status(500).json({ message: "Error hashing password" });
-      }
+      return res.status(201).json({ message: "Meeting scheduled successfully", meetingId: this.lastID });
     }
   );
 });
-
-// -------------- SCHEDULE MEETING (protected) --------------
-app.post("/meetings", authenticateToken, (req, res) => {
-  try {
-    if (!req.user || !req.user.email) {
-      return res.status(401).json({ message: "Unauthorized: invalid token" });
-    }
-
-    const { scheduler, participantEmail, purpose, venue, date, startTime, endTime, isGroup, participants, token } = req.body;
-    const schedulerEmail = scheduler || req.user.email;
-
-    // Validate required fields including date
-    if (!schedulerEmail || !participantEmail || !purpose || !venue || !date || !startTime || !endTime || !token) {
-      return res.status(400).json({ message: "Missing required meeting fields" });
-    }
-
-    // Validate start time is before end time using date + time
-    const startDateTime = new Date(`${date}T${startTime}`);
-    const endDateTime = new Date(`${date}T${endTime}`);
-
-    if (startDateTime >= endDateTime) {
-      return res.status(400).json({ message: "Start time must be before end time" });
-    }
-
-    db.get(`SELECT * FROM meetings WHERE token = ?`, [token], (err, existing) => {
-      if (err) return res.status(500).json({ message: "Server error" });
-      if (existing) return res.status(409).json({ message: "Meeting token already exists." });
-
-      const finalParticipants = Array.isArray(participants) ? [...new Set(participants)] : [];
-
-     db.run(
-  `INSERT INTO meetings (
-    scheduler, participantEmail, purpose, venue, date, startTime, endTime, isGroup, participants, token, status, approvedBy
-  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  [
-    schedulerEmail,
-    participantEmail,
-    purpose,
-    venue,
-    date,
-    startTime,
-    endTime,
-    isGroup ? 1 : 0,
-    JSON.stringify(finalParticipants),
-    token,
-    req.user.role === "staff" ? "Approved" : "Pending",
-    null // or staff email if staff is scheduling
-  ],
-
-        function (err) {
-          if (err) return res.status(500).json({ message: "Failed to schedule meeting" });
-          return res.status(201).json({ message: "Meeting scheduled successfully", meetingId: this.lastID });
-        }
-      );
-    });
-  } catch (err) {
-    return res.status(500).json({ message: "Server error" });
-  }
-});
-
 
 // -------------- GET MEETINGS (protected) --------------
 app.get("/meetings", authenticateToken, (req, res) => {
@@ -353,46 +221,10 @@ app.get("/meetings", authenticateToken, (req, res) => {
   });
 });
 
-// -------------- UPDATE MEETING STATUS (protected) --------------
-app.patch("/meetings/:id", authenticateToken, (req, res) => {
-  const { id } = req.params;
-  const { status, approvedBy } = req.body;
-
-  if (req.user.role !== "staff") {
-    return res.status(403).json({ message: "Only staff can update meeting status" });
-  }
-
-  db.run(
-    `UPDATE meetings SET status = ?, approvedBy = ? WHERE id = ?`,
-    [status, approvedBy || req.user.email, id],
-    function (err) {
-      if (err) {
-        console.error("DB error updating meeting:", err);
-        return res.status(500).json({ message: "Failed to update meeting" });
-      }
-      if (this.changes === 0) return res.status(404).json({ message: "Meeting not found" });
-      res.json({ message: "Meeting status updated" });
-    }
-  );
-});
-
-// -------------- DELETE USER (protected) --------------
+// -------------- DEBUG USERS --------------
 app.get("/debug-users", (req, res) => {
   db.all("SELECT * FROM users", [], (err, rows) => {
     if(err) return res.status(500).json({ message: err.message });
-    res.json(rows);
-  });
-});
-
-// -------------- GET ALL USERS (protected) --------------
-app.get("/users", authenticateToken, (req, res) => {
-  if (req.user.role !== "staff") return res.status(403).json({ message: "Forbidden" });
-
-  db.all("SELECT regno, name, email, role FROM users", [], (err, rows) => {
-    if (err) {
-      console.error("DB error fetching users:", err);
-      return res.status(500).json({ message: "Failed to fetch users" });
-    }
     res.json(rows);
   });
 });
