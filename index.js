@@ -5,10 +5,13 @@ const sqlite3 = require("sqlite3").verbose();
 const crypto = require("crypto");
 const jwt = require("jsonwebtoken");
 const cors = require("cors");
-const path = require("path"); // Ensure path is imported
+const path = require("path");
+const sgMail = require("@sendgrid/mail");
+
+sgMail.setApiKey(process.env.SENDGRID_API_KEY);
+
 const app = express();
 
-// ---------- Middleware ----------
 app.use(express.json());
 app.use(cors({
   origin: "http://localhost:3000",
@@ -17,12 +20,10 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
-// ---------- Config ----------
 const PORT = process.env.PORT || 5000;
 const JWT_SECRET = process.env.JWT_SECRET || "sweetysumanthdisneyigneshiya!";
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || "30d";
 
-// ---------- DB ----------
 const dbPath = path.join(__dirname, "meetpass.db");
 console.log("📂 Using database at:", dbPath);
 
@@ -31,7 +32,6 @@ const db = new sqlite3.Database(dbPath, (err) => {
   else console.log("✅ Connected to SQLite database");
 });
 
-// Create tables if not exists
 db.run(`CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   regno TEXT UNIQUE,
@@ -60,7 +60,6 @@ db.run(`CREATE TABLE IF NOT EXISTS meetings (
   approvedBy TEXT
 )`);
 
-// ---------- Helpers ----------
 function signJwt(payload) {
   return jwt.sign(payload, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
 }
@@ -69,7 +68,6 @@ function hashToken(token) {
   return crypto.createHash("sha256").update(token).digest("hex");
 }
 
-// ---------- JWT Middleware ----------
 function authenticateToken(req, res, next) {
   const authHeader = req.headers["authorization"];
   if (!authHeader) return res.status(401).json({ message: "Missing authorization header" });
@@ -84,10 +82,8 @@ function authenticateToken(req, res, next) {
   });
 }
 
-// Health check
 app.get("/", (req, res) => res.send("MeetPass running successfully"));
 
-// -------------- SIGNUP --------------
 app.post("/signup", async (req, res) => {
   const { regno, name, email, password, role } = req.body;
   if (!regno || !name || !email || !password || !role) {
@@ -115,7 +111,6 @@ app.post("/signup", async (req, res) => {
   }
 });
 
-// -------------- LOGIN --------------
 app.post("/login-regno", (req, res) => {
   const { regno, password } = req.body;
   if (!regno || !password) {
@@ -147,90 +142,8 @@ app.post("/login-regno", (req, res) => {
     });
   });
 });
-// ----------- FORGOT PASSWORD -----------
-app.post("/forgot-password", (req, res) => {
-  const { email } = req.body;
 
-  if (!email) {
-    return res.status(400).json({ message: "Email is required" });
-  }
-
-  db.get("SELECT * FROM users WHERE LOWER(email) = LOWER(?)", [email], (err, user) => {
-    if (err) {
-      console.error("DB error:", err);
-      return res.status(500).json({ message: "Internal server error" });
-    }
-
-    if (!user) {
-      // Respond generically for security
-      return res.json({ message: "If an account exists with that email, a reset link will be sent" });
-    }
-
-    // Generate reset token and expiry (1 hour validity)
-    const resetToken = crypto.randomBytes(32).toString("hex");
-    const resetTokenExpiry = Date.now() + 3600000;
-
-    db.run(
-      "UPDATE users SET resetToken=?, resetTokenExpiry=? WHERE id=?",
-      [resetToken, resetTokenExpiry, user.id],
-      (updateErr) => {
-        if (updateErr) {
-          console.error("DB error updating reset token:", updateErr);
-          return res.status(500).json({ message: "Internal server error" });
-        }
-
-        // TODO: Send an email with reset link containing resetToken
-        console.log(`Reset password link: https://yourappdomain/reset-password/${resetToken}`);
-
-        res.json({ message: "If an account exists with that email, a reset link will be sent" });
-      }
-    );
-  });
-});
-
-// ----------- RESET PASSWORD -----------
-app.post("/reset-password/:token", async (req, res) => {
-  const { token } = req.params;
-  const { newPassword } = req.body;
-
-  if (!newPassword) {
-    return res.status(400).json({ message: "New password is required" });
-  }
-
-  db.get("SELECT * FROM users WHERE resetToken=? AND resetTokenExpiry > ?", [token, Date.now()], async (err, user) => {
-    if (err) {
-      console.error("DB error:", err);
-      return res.status(500).json({ message: "Internal server error" });
-    }
-
-    if (!user) {
-      return res.status(400).json({ message: "Invalid or expired reset token" });
-    }
-
-    try {
-      const hashedPassword = await bcrypt.hash(newPassword, 10);
-      db.run(
-        "UPDATE users SET password=?, resetToken=NULL, resetTokenExpiry=NULL WHERE id=?",
-        [hashedPassword, user.id],
-        (updateErr) => {
-          if (updateErr) {
-            console.error("DB error updating password:", updateErr);
-            return res.status(500).json({ message: "Internal server error" });
-          }
-          res.json({ message: "Password reset successfully" });
-        }
-      );
-    } catch (hashErr) {
-      console.error("Hashing error:", hashErr);
-      return res.status(500).json({ message: "Internal server error" });
-    }
-  });
-});
-
-// ----------------- SCHEDULE MEETING (protected) -----------------
 app.post("/meetings", authenticateToken, (req, res) => {
-  console.log("Request body:", req.body); // debug
-
   const { scheduler, participantEmail, purpose, venue, date, startTime, endTime, isGroup, participants, token } = req.body;
   const schedulerEmail = scheduler || req.user.email;
 
@@ -240,7 +153,6 @@ app.post("/meetings", authenticateToken, (req, res) => {
 
   const startDateTime = new Date(`${date}T${startTime}`);
   const endDateTime = new Date(`${date}T${endTime}`);
-
   if (startDateTime >= endDateTime) {
     return res.status(400).json({ message: "Start time must be before end time" });
   }
@@ -275,7 +187,6 @@ app.post("/meetings", authenticateToken, (req, res) => {
   );
 });
 
-// -------------- GET MEETINGS (protected) --------------
 app.get("/meetings", authenticateToken, (req, res) => {
   const userEmail = req.user.email;
   const isStaff = req.user.role === "staff";
@@ -284,21 +195,22 @@ app.get("/meetings", authenticateToken, (req, res) => {
     if (err) return res.status(500).json({ message: "Failed to fetch meetings" });
 
     const parsed = rows.map(r => {
-      try { r.participants = JSON.parse(r.participants || "[]"); } 
+      try { r.participants = JSON.parse(r.participants || "[]"); }
       catch { r.participants = []; }
       return r;
     });
 
     const filtered = parsed.filter(m =>
-      isStaff || 
-      m.scheduler === userEmail || 
-      m.participantEmail === userEmail || 
+      isStaff ||
+      m.scheduler === userEmail ||
+      m.participantEmail === userEmail ||
       (m.isGroup && m.participants.includes(userEmail))
     );
 
     res.json(filtered);
   });
 });
+
 app.patch("/meetings/:id", (req, res) => {
   const { id } = req.params;
   const { status, approvedBy } = req.body;
@@ -306,8 +218,6 @@ app.patch("/meetings/:id", (req, res) => {
   if (!status) {
     return res.status(400).json({ message: "Status is required" });
   }
-
-  // Optional: validate status value (e.g., "Approved", "Rejected")
 
   const approvedByValue = approvedBy || null;
 
@@ -327,7 +237,89 @@ app.patch("/meetings/:id", (req, res) => {
   );
 });
 
-// -------------- DEBUG USERS --------------
+app.post("/forgot-password", (req, res) => {
+  const { email } = req.body;
+  if (!email) return res.status(400).json({ message: "Email is required" });
+
+  db.get("SELECT * FROM users WHERE LOWER(email) = LOWER(?)", [email], (err, user) => {
+    if (err) {
+      console.error(err);
+      return res.status(500).json({ message: "Internal server error" });
+    }
+
+    if (!user) {
+      return res.json({ message: "If an account exists with that email, a reset link will be sent" });
+    }
+
+    const resetToken = crypto.randomBytes(32).toString("hex");
+    const resetTokenExpiry = Date.now() + 3600000;
+
+    db.run(
+      "UPDATE users SET resetToken=?, resetTokenExpiry=? WHERE id=?",
+      [resetToken, resetTokenExpiry, user.id],
+      async (updateErr) => {
+        if (updateErr) {
+          console.error(updateErr);
+          return res.status(500).json({ message: "Internal server error" });
+        }
+
+        const resetUrl = `${process.env.FRONTEND_URL}/reset-password/${resetToken}`;
+
+        const msg = {
+          to: email,
+          from: process.env.EMAIL_FROM,
+          subject: "MeetPass Password Reset",
+          html: `<p>Click this link to reset your password:</p><a href="${resetUrl}">${resetUrl}</a>`
+        };
+
+        try {
+          await sgMail.send(msg);
+          res.json({ message: "If an account exists with that email, a reset link will be sent" });
+        } catch (emailErr) {
+          console.error(emailErr);
+          res.status(500).json({ message: "Failed to send reset email" });
+        }
+      }
+    );
+  });
+});
+
+app.post("/reset-password/:token", async (req, res) => {
+  const { token } = req.params;
+  const { newPassword } = req.body;
+
+  if (!newPassword) return res.status(400).json({ message: "New password is required" });
+
+  db.get("SELECT * FROM users WHERE resetToken=? AND resetTokenExpiry > ?", [token, Date.now()], async (err, user) => {
+    if (err) {
+      console.error(err);
+      return res.status(500).json({ message: "Internal server error" });
+    }
+
+    if (!user) {
+      return res.status(400).json({ message: "Invalid or expired reset token" });
+    }
+
+    try {
+      const hashedPassword = await bcrypt.hash(newPassword, 10);
+      db.run(
+        "UPDATE users SET password=?, resetToken=NULL, resetTokenExpiry=NULL WHERE id=?",
+        [hashedPassword, user.id],
+        (updateErr) => {
+          if (updateErr) {
+            console.error(updateErr);
+            return res.status(500).json({ message: "Internal server error" });
+          }
+          res.json({ message: "Password reset successfully" });
+        }
+      );
+    } catch (hashErr) {
+      console.error(hashErr);
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+});
+
 app.get("/debug-users", (req, res) => {
   db.all("SELECT * FROM users", [], (err, rows) => {
     if(err) return res.status(500).json({ message: err.message });
@@ -335,7 +327,4 @@ app.get("/debug-users", (req, res) => {
   });
 });
 
-// ---------- Start server ----------
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
-
-
