@@ -23,6 +23,8 @@ const JWT_SECRET = process.env.JWT_SECRET || "sweetysumanthdisneyigneshiya!";
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || "30d";
 
 // ---------- DB ----------
+const path = require("path");
+console.log("Your database location is:", path.resolve("./meetpass.db"));
 const db = new sqlite3.Database("./meetpass.db", (err) => {
   if (err) console.error("DB Error:", err.message);
   else console.log("✅ Connected to SQLite database");
