@@ -5,7 +5,7 @@ const sqlite3 = require("sqlite3").verbose();
 const crypto = require("crypto");
 const jwt = require("jsonwebtoken");
 const cors = require("cors");
-
+const path = require("path"); 
 const app = express();
 
 // ---------- Middleware ----------
@@ -23,12 +23,14 @@ const JWT_SECRET = process.env.JWT_SECRET || "sweetysumanthdisneyigneshiya!";
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || "30d";
 
 // ---------- DB ----------
-const path = require("path");
-console.log("Your database location is:", path.resolve("./meetpass.db"));
-const db = new sqlite3.Database("./meetpass.db", (err) => {
+const dbPath = path.join(__dirname, "meetpass.db");
+console.log("📂 Using database at:", dbPath);
+
+const db = new sqlite3.Database(dbPath, (err) => {
   if (err) console.error("DB Error:", err.message);
   else console.log("✅ Connected to SQLite database");
 });
+
 
 // Create tables (if not exists)
 db.run(`CREATE TABLE IF NOT EXISTS users (
