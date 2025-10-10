@@ -220,6 +220,33 @@ app.get("/meetings", authenticateToken, (req, res) => {
     res.json(filtered);
   });
 });
+app.patch("/meetings/:id", (req, res) => {
+  const { id } = req.params;
+  const { status, approvedBy } = req.body;
+
+  if (!status) {
+    return res.status(400).json({ message: "Status is required" });
+  }
+
+  // Optional: validate status value (e.g., "Approved", "Rejected")
+
+  const approvedByValue = approvedBy || null;
+
+  db.run(
+    `UPDATE meetings SET status = ?, approvedBy = ? WHERE id = ?`,
+    [status, approvedByValue, id],
+    function (err) {
+      if (err) {
+        console.error("DB error updating meeting:", err);
+        return res.status(500).json({ message: "Failed to update meeting" });
+      }
+      if (this.changes === 0) {
+        return res.status(404).json({ message: "Meeting not found" });
+      }
+      res.json({ message: "Meeting status updated" });
+    }
+  );
+});
 
 // -------------- DEBUG USERS --------------
 app.get("/debug-users", (req, res) => {
@@ -231,3 +258,4 @@ app.get("/debug-users", (req, res) => {
 
 // ---------- Start server ----------
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+
