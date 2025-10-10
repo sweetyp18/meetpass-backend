@@ -147,6 +147,85 @@ app.post("/login-regno", (req, res) => {
     });
   });
 });
+// ----------- FORGOT PASSWORD -----------
+app.post("/forgot-password", (req, res) => {
+  const { email } = req.body;
+
+  if (!email) {
+    return res.status(400).json({ message: "Email is required" });
+  }
+
+  db.get("SELECT * FROM users WHERE LOWER(email) = LOWER(?)", [email], (err, user) => {
+    if (err) {
+      console.error("DB error:", err);
+      return res.status(500).json({ message: "Internal server error" });
+    }
+
+    if (!user) {
+      // Respond generically for security
+      return res.json({ message: "If an account exists with that email, a reset link will be sent" });
+    }
+
+    // Generate reset token and expiry (1 hour validity)
+    const resetToken = crypto.randomBytes(32).toString("hex");
+    const resetTokenExpiry = Date.now() + 3600000;
+
+    db.run(
+      "UPDATE users SET resetToken=?, resetTokenExpiry=? WHERE id=?",
+      [resetToken, resetTokenExpiry, user.id],
+      (updateErr) => {
+        if (updateErr) {
+          console.error("DB error updating reset token:", updateErr);
+          return res.status(500).json({ message: "Internal server error" });
+        }
+
+        // TODO: Send an email with reset link containing resetToken
+        console.log(`Reset password link: https://yourappdomain/reset-password/${resetToken}`);
+
+        res.json({ message: "If an account exists with that email, a reset link will be sent" });
+      }
+    );
+  });
+});
+
+// ----------- RESET PASSWORD -----------
+app.post("/reset-password/:token", async (req, res) => {
+  const { token } = req.params;
+  const { newPassword } = req.body;
+
+  if (!newPassword) {
+    return res.status(400).json({ message: "New password is required" });
+  }
+
+  db.get("SELECT * FROM users WHERE resetToken=? AND resetTokenExpiry > ?", [token, Date.now()], async (err, user) => {
+    if (err) {
+      console.error("DB error:", err);
+      return res.status(500).json({ message: "Internal server error" });
+    }
+
+    if (!user) {
+      return res.status(400).json({ message: "Invalid or expired reset token" });
+    }
+
+    try {
+      const hashedPassword = await bcrypt.hash(newPassword, 10);
+      db.run(
+        "UPDATE users SET password=?, resetToken=NULL, resetTokenExpiry=NULL WHERE id=?",
+        [hashedPassword, user.id],
+        (updateErr) => {
+          if (updateErr) {
+            console.error("DB error updating password:", updateErr);
+            return res.status(500).json({ message: "Internal server error" });
+          }
+          res.json({ message: "Password reset successfully" });
+        }
+      );
+    } catch (hashErr) {
+      console.error("Hashing error:", hashErr);
+      return res.status(500).json({ message: "Internal server error" });
+    }
+  });
+});
 
 // ----------------- SCHEDULE MEETING (protected) -----------------
 app.post("/meetings", authenticateToken, (req, res) => {
@@ -258,4 +337,5 @@ app.get("/debug-users", (req, res) => {
 
 // ---------- Start server ----------
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+
 
